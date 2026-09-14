@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from textual import on, work
+from rich.text import Text
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -10,7 +11,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
 
 from slop.config import Config, ensure as ensure_config, save as save_config
-from slop.quota import Quota, fetch_all, until_label
+from slop.quota import Quota, Window, fetch_all, until_label
+from slop.theme import GREEN, GROK_NIGHT, GUTTER, MUTED, RED, YELLOW
 from slop.store import (
     StoreError,
     current_name,
@@ -26,130 +28,157 @@ from slop.store import (
     unmanaged_auth_exists,
 )
 
-
-def _bar(remaining: float, width: int = 18) -> str:
-    remaining = max(0.0, min(100.0, remaining))
-    filled = int(round((remaining / 100.0) * width))
-    filled = min(width, max(0, filled))
-    return "█" * filled + "░" * (width - filled)
-
-
 def _bar_style(remaining: float) -> str:
-    if remaining <= 0:
-        return "red"
     if remaining < 20:
-        return "red"
+        return RED
     if remaining < 40:
-        return "yellow"
-    return "green"
+        return YELLOW
+    return GREEN
 
 
 def _fmt_credits(value: float | None) -> str:
     if value is None:
         return ""
     if value >= 10:
-        return f"credits {value:.0f}"
-    return f"credits {value:.2f}"
+        return f"{value:.0f} credits"
+    return f"{value:.2f} credits"
 
 
-def render_card(name: str, active: bool, ident_email: str | None, ident_plan: str | None, quota: Quota | None, loading: bool) -> str:
-    badge = " [bold #c6b26a]ACTIVE[/]" if active else ""
-    email = (quota.email if quota and quota.email else ident_email) or "unknown"
-    plan = (quota.plan if quota and quota.plan else ident_plan) or ""
-    header = f"[bold]{name}[/]{badge}   [dim]{email}[/]  {plan}"
+def _split_bar(remaining: float, width: int) -> tuple[int, int]:
+    remaining = max(0.0, min(100.0, remaining))
+    width = max(4, width)
+    filled = int(round((remaining / 100.0) * width))
+    filled = min(width, max(0, filled))
+    return filled, width - filled
+
+
+class UsageMeter(Static):
+    DEFAULT_CSS = """
+    UsageMeter {
+        width: 1fr;
+        height: 1;
+        margin: 0 0 1 0;
+    }
+    """
+
+    def __init__(self, window: Window) -> None:
+        super().__init__()
+        self.window = window
+
+    def on_resize(self) -> None:
+        self.refresh()
+
+    def render(self) -> Text:
+        remaining = self.window.remaining_percent
+        color = _bar_style(remaining)
+        resets = until_label(self.window.resets_at)
+        meta = f"{remaining:3.0f}%"
+        if resets:
+            meta += f" · {resets}"
+        prefix = f"{self.window.label:<3} "
+        # prefix + space + bar + two spaces + meta
+        bar_width = max(8, self.size.width - len(prefix) - len(meta) - 2)
+        filled, empty = _split_bar(remaining, bar_width)
+        text = Text()
+        text.append(prefix, style=MUTED)
+        if filled:
+            text.append("█" * filled, style=color)
+        if empty:
+            text.append("░" * empty, style=GUTTER)
+        text.append("  ")
+        text.append(meta, style=color if remaining < 40 else MUTED)
+        return text
+
+
+def _status_markup(quota: Quota | None, loading: bool) -> str:
     if loading and quota is None:
-        return header + "\n[dim]fetching usage…[/]"
+        return f"[{MUTED}]fetching usage…[/]"
     if quota is None:
-        return header + "\n[dim]no usage yet[/]"
+        return f"[{MUTED}]waiting for usage[/]"
     if not quota.ok:
-        return header + f"\n[red]{quota.error or 'usage unavailable'}[/]"
-    lines = [header]
-    if quota.windows:
-        for window in quota.windows:
-            style = _bar_style(window.remaining_percent)
-            resets = until_label(window.resets_at)
-            left = f"{window.remaining_percent:.0f}% left"
-            extra = f"  resets {resets}" if resets else ""
-            lines.append(
-                f"[{style}]{_bar(window.remaining_percent)}[/]  {window.label}  {left}{extra}"
-            )
-    else:
-        lines.append("[dim]no rate-limit windows[/]")
-    status_bits = []
+        return f"[{RED}]{quota.error or 'usage unavailable'}[/]"
     if quota.blocked:
-        status_bits.append("[red]EMPTY[/]")
+        status = f"[{RED}]empty[/]"
     elif any(w.remaining_percent < 20 for w in quota.windows):
-        status_bits.append("[yellow]LOW[/]")
+        status = f"[{YELLOW}]low[/]"
     else:
-        status_bits.append("[green]OK[/]")
+        status = f"[{GREEN}]ok[/]"
+    extras: list[str] = [status]
     credits = _fmt_credits(quota.credits)
     if credits:
-        status_bits.append(f"[dim]{credits}[/]")
-    lines.append(" · ".join(status_bits))
-    return "\n".join(lines)
-
-
-def render_detail(name: str, quota: Quota | None, loading: bool, ident) -> str:
-    lines = [f"[bold #c6b26a]{name}[/]"]
-    email = ident.email or (quota.email if quota else None)
-    plan = ident.plan or (quota.plan if quota else None)
-    if ident.name:
-        lines.append(ident.name)
-    if email:
-        lines.append(email)
-    if plan:
-        lines.append(f"plan {plan}")
-    if ident.account_id:
-        lines.append(f"[dim]{ident.account_id}[/]")
-    lines.append("")
-    if loading and quota is None:
-        lines.append("[dim]fetching usage…[/]")
-        return "\n".join(lines)
-    if quota is None:
-        lines.append("[dim]press r to refresh usage[/]")
-        return "\n".join(lines)
-    if not quota.ok:
-        lines.append(f"[red]{quota.error}[/]")
-        return "\n".join(lines)
-    if quota.blocked:
-        lines.append("[red]included usage is exhausted[/]")
-    if quota.ordinary_allowed is False:
-        lines.append("[dim]ordinaryUsageAllowed = false[/]")
-    for window in quota.windows:
-        style = _bar_style(window.remaining_percent)
-        resets = until_label(window.resets_at)
-        clock = ""
-        from slop.quota import reset_clock
-
-        clock_s = reset_clock(window.resets_at)
-        bits = [f"{window.remaining_percent:.0f}% left"]
-        if resets:
-            bits.append(f"in {resets}")
-        if clock_s:
-            bits.append(clock_s)
-        lines.append(f"{window.label}")
-        lines.append(f"[{style}]{_bar(window.remaining_percent, 22)}[/]")
-        lines.append("[dim]" + " · ".join(bits) + "[/]")
-        lines.append("")
-    if quota.credits is not None:
-        lines.append(_fmt_credits(quota.credits))
+        extras.append(f"[{MUTED}]{credits}[/]")
+    bits = []
     for label, windows in quota.extra:
         if not windows:
             continue
-        lines.append("")
-        lines.append(f"[dim]{label}[/]")
-        for window in windows:
-            lines.append(
-                f"  {window.label}  {window.remaining_percent:.0f}% left"
-                + (f"  {until_label(window.resets_at)}" if window.resets_at else "")
-            )
-    lines.append("")
-    lines.append("[dim]enter launches Codex with this bucket[/]")
-    lines.append("[dim]s switches without launching[/]")
-    return "\n".join(lines)
+        parts = " · ".join(f"{w.label} {w.remaining_percent:.0f}%" for w in windows)
+        bits.append(f"{label} {parts}")
+    if bits:
+        extras.append(f"[{MUTED}]{'  ·  '.join(bits)}[/]")
+    return "   ".join(extras)
 
 
 class BucketItem(ListItem):
+    DEFAULT_CSS = """
+    BucketItem {
+        layout: vertical;
+        height: auto;
+        padding: 1 2 1 2;
+        margin: 0 2 1 2;
+        background: #1c1c1c;
+        border: tall #333333;
+        color: #e1e1e1;
+    }
+    ListView > BucketItem.-highlight {
+        background: #242424;
+        border: tall #bb9af7;
+        color: #e1e1e1;
+        text-style: none;
+    }
+    ListView:focus > BucketItem.-highlight {
+        background: #242424;
+        border: tall #bb9af7;
+        color: #e1e1e1;
+        text-style: none;
+    }
+    BucketItem .head {
+        height: 1;
+        margin-bottom: 1;
+    }
+    BucketItem .name {
+        width: auto;
+        text-style: bold;
+        color: #e1e1e1;
+        padding-right: 1;
+    }
+    BucketItem .badge {
+        width: auto;
+        color: #141414;
+        background: #bb9af7;
+        text-style: bold;
+        padding: 0 1;
+        margin-right: 1;
+    }
+    BucketItem .email {
+        width: 1fr;
+        color: #6c6c6c;
+        padding-left: 1;
+    }
+    BucketItem .plan {
+        width: auto;
+        color: #6c6c6c;
+        text-style: italic;
+    }
+    BucketItem #meters {
+        height: auto;
+        width: 1fr;
+    }
+    BucketItem #foot {
+        height: auto;
+        color: #6c6c6c;
+    }
+    """
+
     def __init__(
         self,
         name: str,
@@ -168,19 +197,56 @@ class BucketItem(ListItem):
         self._loading = loading
 
     def compose(self) -> ComposeResult:
-        yield Static(self._markup(), markup=True)
+        with Horizontal(classes="head"):
+            yield Label(self.bucket_name, classes="name")
+            yield Label("ACTIVE", classes="badge", id="badge")
+            yield Label(self._email or "", classes="email")
+            yield Label((self._plan or "").upper(), classes="plan")
+        yield Vertical(id="meters")
+        yield Static(_status_markup(self._quota, self._loading), id="foot", markup=True)
 
-    def _markup(self) -> str:
-        return render_card(
-            self.bucket_name, self._active, self._email, self._plan, self._quota, self._loading
-        )
+    def on_mount(self) -> None:
+        self.populate()
 
-    def set_state(self, *, active: bool, quota: Quota | None, loading: bool) -> None:
+    def set_state(self, *, active: bool, quota: Quota | None, loading: bool, email: str | None = None, plan: str | None = None) -> None:
         self._active = active
         self._quota = quota
         self._loading = loading
-        body = self.query_one(Static)
-        body.update(self._markup())
+        if email is not None:
+            self._email = email
+        if plan is not None:
+            self._plan = plan
+        self.populate()
+
+    def populate(self) -> None:
+        badge = self.query_one("#badge", Label)
+        badge.display = self._active
+        email_w = self.query_one(".email", Label)
+        plan_w = self.query_one(".plan", Label)
+        email_w.update(self._email or "")
+        plan_w.update((self._plan or "").upper())
+        meters = self.query_one("#meters", Vertical)
+        meters.remove_children()
+        quota = self._quota
+        if self._loading and quota is None:
+            meters.mount(Static("fetching usage…", markup=True))
+        elif quota is None:
+            meters.mount(Static(f"[{MUTED}]press r to load usage[/]", markup=True))
+        elif not quota.ok:
+            meters.mount(Static(f"[{RED}]{quota.error or 'usage unavailable'}[/]", markup=True))
+        elif quota.windows:
+            for window in quota.windows:
+                meters.mount(UsageMeter(window))
+        else:
+            meters.mount(Static(f"[{MUTED}]no usage windows[/]", markup=True))
+        if quota and quota.ok:
+            if quota.email:
+                self._email = quota.email
+                email_w.update(quota.email)
+            if quota.plan:
+                self._plan = quota.plan
+                plan_w.update(quota.plan.upper())
+        self.query_one("#foot", Static).update(_status_markup(quota, self._loading))
 
 
 @dataclass(frozen=True)
@@ -196,8 +262,8 @@ class NameModal(ModalScreen[str | None]):
         width: 56;
         height: auto;
         padding: 1 2;
-        border: tall #c6b26a;
-        background: #1c1914;
+        border: tall #bb9af7;
+        background: #1c1c1c;
     }
     Input { margin: 1 0; }
     Button { width: 1fr; }
@@ -244,8 +310,8 @@ class AddModal(ModalScreen[AddSpec | None]):
         width: 62;
         height: auto;
         padding: 1 2;
-        border: tall #c6b26a;
-        background: #1c1914;
+        border: tall #bb9af7;
+        background: #1c1c1c;
     }
     Input { margin: 1 0; }
     Button { width: 1fr; margin-top: 1; }
@@ -290,8 +356,8 @@ class ConfirmModal(ModalScreen[bool]):
         width: 56;
         height: auto;
         padding: 1 2;
-        border: tall #d45c4a;
-        background: #1c1914;
+        border: tall #f7768e;
+        background: #1c1c1c;
     }
     Button { width: 1fr; }
     """
@@ -317,52 +383,60 @@ class ConfirmModal(ModalScreen[bool]):
 class SlopApp(App[tuple[str, str, list[str]] | None]):
     TITLE = "slop"
     SUB_TITLE = "buckets"
+    ENABLE_COMMAND_PALETTE = False
     CSS = """
     Screen {
-        background: #14120e;
-        color: #e8e0d0;
+        background: #141414;
+        color: #e1e1e1;
     }
     Header {
-        background: #1c1914;
-        color: #c6b26a;
+        background: #0c0c0c;
+        color: #bb9af7;
         text-style: bold;
     }
     Footer {
-        background: #1c1914;
+        background: #0c0c0c;
+        color: #c8c8c8;
+    }
+    #summary {
+        height: 1;
+        padding: 0 3;
+        color: #6c6c6c;
+        background: #0c0c0c;
+        border-bottom: solid #333333;
     }
     #body {
         height: 1fr;
+        layout: vertical;
     }
     #buckets {
-        width: 3fr;
-        background: #14120e;
-        scrollbar-color: #c6b26a;
-    }
-    #detail {
-        width: 2fr;
-        padding: 1 2;
-        border-left: tall #2a261c;
-        background: #18150f;
+        height: 1fr;
+        background: #141414;
+        scrollbar-color: #bb9af7;
+        padding: 1 0 0 0;
     }
     ListView {
-        padding: 1 0;
+        background: #141414;
     }
-    ListItem {
-        height: auto;
-        margin: 0 1 1 1;
-        padding: 1 2;
-        background: #1a1712;
-        border: tall #2a261c;
+    ListView:focus {
+        background-tint: 0%;
     }
-    ListItem.--highlight {
-        background: #2a2418;
-        border: tall #c6b26a;
+    ListView > ListItem.-highlight {
+        background: #242424;
+        color: #e1e1e1;
+        text-style: none;
+    }
+    ListView:focus > ListItem.-highlight {
+        background: #242424;
+        color: #e1e1e1;
+        text-style: none;
     }
     #empty {
         width: 100%;
         height: 1fr;
         content-align: center middle;
-        color: #8a8070;
+        color: #6c6c6c;
+        display: none;
     }
     """
     BINDINGS = [
@@ -378,21 +452,23 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
 
     def __init__(self) -> None:
         super().__init__()
+        self.register_theme(GROK_NIGHT)
+        self.theme = "groknight"
         self.cfg: Config = ensure_config()
         self.quotas: dict[str, Quota] = {}
         self.loading: set[str] = set()
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        with Horizontal(id="body"):
+        yield Header(show_clock=True, icon="◆")
+        yield Static("", id="summary")
+        with Vertical(id="body"):
             yield ListView(id="buckets")
-            yield Static("", id="detail", markup=True)
+            yield Static(
+                "No buckets yet.\n\nPress [b]a[/] to add a Codex account.",
+                id="empty",
+                markup=True,
+            )
         yield Footer()
-        yield Static(
-            "No buckets yet.\nPress [b]a[/] to add a Codex account.",
-            id="empty",
-            markup=True,
-        )
 
     def on_mount(self) -> None:
         ensure_file_store()
@@ -420,18 +496,69 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.reload()
         self.action_refresh()
 
+    def _summary_text(self) -> str:
+        profiles = list_profiles()
+        if not profiles:
+            return "no buckets"
+        n = len(profiles)
+        noun = "bucket" if n == 1 else "buckets"
+        bits = [f"{n} {noun}"]
+        empty = []
+        ok = []
+        for profile in profiles:
+            q = self.quotas.get(profile.name)
+            if q and q.ok and q.blocked:
+                empty.append(profile.name)
+            elif q and q.ok:
+                ok.append(profile.name)
+        if empty:
+            bits.append("empty: " + ", ".join(empty))
+        elif ok and len(ok) == n:
+            bits.append("all ok")
+        mode = "full access" if self.cfg.launch.full_access else "sandbox on"
+        bits.append(mode)
+        return "   ·   ".join(bits)
+
+    def _update_summary(self) -> None:
+        self.query_one("#summary", Static).update(self._summary_text())
+
     def reload(self) -> None:
         profiles = list_profiles()
         lv = self.query_one("#buckets", ListView)
         empty = self.query_one("#empty", Static)
         current = current_name()
         keep = lv.index
+        existing = {
+            item.bucket_name: item
+            for item in lv.children
+            if isinstance(item, BucketItem)
+        }
+        names = [p.name for p in profiles]
+        if set(existing) == set(names) and names:
+            empty.display = False
+            lv.display = True
+            for profile in profiles:
+                existing[profile.name].set_state(
+                    active=profile.active,
+                    quota=self.quotas.get(profile.name),
+                    loading=profile.name in self.loading,
+                    email=profile.identity.email,
+                    plan=profile.identity.plan,
+                )
+            self._update_summary()
+            try:
+                lv.focus()
+            except Exception:
+                pass
+            return
         lv.clear()
         if not profiles:
             empty.display = True
-            self.query_one("#detail", Static).update("No buckets.")
+            lv.display = False
+            self._update_summary()
             return
         empty.display = False
+        lv.display = True
         for profile in profiles:
             lv.append(
                 BucketItem(
@@ -450,7 +577,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                 if profile.name == current:
                     lv.index = i
                     break
-        self._refresh_detail()
+        self._update_summary()
         try:
             lv.focus()
         except Exception:
@@ -462,27 +589,6 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         if isinstance(item, BucketItem):
             return item.bucket_name
         return None
-
-    def _refresh_detail(self) -> None:
-        name = self._selected_name()
-        panel = self.query_one("#detail", Static)
-        if not name:
-            panel.update("")
-            return
-        ident = next((p.identity for p in list_profiles() if p.name == name), None)
-        from slop.store import Identity
-
-        panel.update(
-            render_detail(
-                name,
-                self.quotas.get(name),
-                name in self.loading,
-                ident or Identity(),
-            )
-        )
-
-    def on_list_view_highlighted(self) -> None:
-        self._refresh_detail()
 
     def on_list_view_selected(self) -> None:
         self.action_launch()
