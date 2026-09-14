@@ -12,17 +12,19 @@ Arrow keys move. Enter launches. `a` adds. `d` deletes. `r` refreshes usage.
 
 ## Install
 
-After this repo is on GitHub:
+Repo is private. On a box where `gh` is logged in:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/theodorecharles/slop/main/install.sh | bash
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; gh auth setup-git >/dev/null; uv tool install --force git+https://github.com/theodorecharles/SlopBucket.git
 ```
 
-From a checkout:
+Or from a checkout:
 
 ```bash
-uv tool install --force --editable .
+./install.sh
 ```
+
+`install.sh` also deletes any existing `slop` alias from zsh/bash/fish startup files so the new command is not shadowed.
 
 Needs Python 3.11+ and the Codex CLI on `PATH`.
 
