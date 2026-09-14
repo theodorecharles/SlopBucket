@@ -66,9 +66,15 @@ export PATH="${HOME}/.local/bin:${PATH}"
 if [[ -d .git && -f pyproject.toml && -d slop ]]; then
   uv tool install --force --editable .
 else
-  if command -v gh >/dev/null 2>&1; then
-    gh auth setup-git >/dev/null 2>&1 || true
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "slop: GitHub CLI is required. Install it, then: gh auth login" >&2
+    exit 1
   fi
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "slop: run: gh auth login" >&2
+    exit 1
+  fi
+  gh auth setup-git >/dev/null 2>&1 || true
   git_url="$REPO"
   [[ "$git_url" == *.git ]] || git_url="${git_url}.git"
   uv tool install --force "git+${git_url}"
