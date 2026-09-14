@@ -11,12 +11,12 @@ requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Ted Charles" }]
 keywords = ["codex", "chatgpt", "tui"]
-
-[project.urls]
-Homepage = "https://github.com/theodorecharles/SlopBucket"
 dependencies = [
   "textual>=3.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/theodorecharles/SlopBucket"
 
 [project.scripts]
 slop = "slop.cli:main"
