@@ -454,7 +454,11 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         Binding("r", "refresh", "Refresh", show=True),
         Binding("f", "toggle_full", "Full access", show=True),
         Binding("q", "quit", "Quit", show=True),
+        Binding("ctrl+c", "quit", "Quit", show=False, priority=True),
     ]
+
+    def action_help_quit(self) -> None:
+        self.exit()
 
     def __init__(self) -> None:
         super().__init__()
