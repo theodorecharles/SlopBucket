@@ -15,12 +15,10 @@ Arrow keys move. Enter launches. `a` adds. `d` deletes. `r` refreshes usage.
 Needs `gh auth login` once on the box (the package repo is private). Then:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/theodorecharles/getslop/main/install.sh | bash
+source <(curl -fsSL https://raw.githubusercontent.com/theodorecharles/getslop/main/install.sh)
 ```
 
-That installs `slop` and removes any leftover `slop` alias from zsh/bash/fish startup files.
-
-From a checkout: `./install.sh`
+Source it — do not pipe to bash — so this shell drops any leftover `slop` alias. After that, run `slop`.
 
 Needs Python 3.11+ and the Codex CLI on `PATH`.
 
