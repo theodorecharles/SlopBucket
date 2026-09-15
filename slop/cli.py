@@ -122,7 +122,7 @@ def cmd_add(args: argparse.Namespace) -> int:
 
     ensure_file_store()
     try:
-        add_account(args.name, device=args.device)
+        add_account(args.name, device=not args.browser)
     except (AddError, StoreError) as exc:
         _die(str(exc))
     print(f"added and switched to {args.name}")
@@ -284,7 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("add", help="log in a new account as a named bucket")
     p.add_argument("name")
-    p.add_argument("--device", action="store_true", help="use device-code login")
+    p.add_argument("--browser", action="store_true", help="use local-browser login instead of device code")
     p.set_defaults(func=cmd_add)
 
     p = sub.add_parser("save", help="save the current Codex login as a named bucket")

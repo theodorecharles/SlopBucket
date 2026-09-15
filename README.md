@@ -1,26 +1,12 @@
-# slop
+# SlopBucket
 
 TUI dashboard for multiple OpenAI Codex / ChatGPT accounts.
 
-Codex only stores one login at `~/.codex/auth.json`. slop keeps named copies, shows remaining usage, and launches Codex as the account you pick.
-
-```
-slop
-```
-
-Arrow keys move. Enter launches. `a` adds. `d` deletes. `r` refreshes usage.
-
-## Install
-
-Needs `gh auth login` once on the box (the package repo is private). Then:
-
 ```bash
-source <(curl -fsSL https://raw.githubusercontent.com/theodorecharles/getslop/main/install.sh)
+curl -fsSL https://raw.githubusercontent.com/theodorecharles/SlopBucket/main/install.sh | bash && slop
 ```
 
-Source it — do not pipe to bash — so this shell drops any leftover `slop` alias. After that, run `slop`.
-
-Needs Python 3.11+ and the Codex CLI on `PATH`.
+Arrow keys move. Enter launches. `a` adds an account with device-code login (works on headless boxes). `d` deletes. `r` refreshes usage.
 
 ## Usage
 
@@ -29,14 +15,15 @@ Needs Python 3.11+ and the Codex CLI on `PATH`.
 | `slop` | open the buckets TUI |
 | Enter | switch to the highlighted account and launch Codex |
 | `s` | switch without launching |
-| `a` | add another account (`codex login`, no logout) |
+| `a` | add another account (device code) |
 | `d` | delete a saved account |
 | `n` | rename |
 | `r` | refresh usage |
 | `f` | toggle full-access launch |
 | `slop list --quota` | print buckets and live usage |
 | `slop launch ted` | switch to `ted` and exec Codex |
-| `slop add allie` | log in a second account |
+| `slop add allie` | log in a second account (device code) |
+| `slop add allie --browser` | log in with a local browser |
 | `slop use ted` | switch only |
 
 Running Codex sessions keep their in-memory login. `/exit` and launch again after a switch.
@@ -45,7 +32,7 @@ Do **not** run `codex logout` to change accounts. Logout can revoke a saved refr
 
 ## Full access launch
 
-By default slop starts Codex the same way `claude --dangerously-skip-permissions` did:
+By default slop starts Codex with:
 
 ```
 codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust
@@ -67,18 +54,8 @@ Turn it off in the TUI with `f`, or:
 slop config --set launch.full_access false
 ```
 
-`SLOP_FULL_ACCESS=0` overrides for one process.
-
 ## How credentials are stored
 
 - Live login: `~/.codex/auth.json` (symlink)
 - Saved accounts: `~/.codex/auth.d/<name>.json`
-- Codex is pinned to `cli_auth_credentials_store = "file"` so tokens are not hidden in the OS keyring
-
-Token refresh writes through the symlink into the active bucket. Login separately on each machine; sharing one `auth.json` across boxes can invalidate refresh tokens.
-
-## Headless add
-
-```bash
-slop add allie --device
-```
+- Codex is pinned to `cli_auth_credentials_store = "file"`

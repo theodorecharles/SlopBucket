@@ -28,11 +28,11 @@ def _codex_bin() -> str:
     return found
 
 
-def add_account(name: str, *, device: bool = False) -> None:
+def add_account(name: str, *, device: bool = True) -> None:
     """Log into a new Codex account without logging out of saved buckets.
 
-    Temporarily unlinks the active auth.json, runs `codex login`, then stores
-    the new credentials as a named profile. Previous buckets are left intact.
+    Temporarily unlinks the active auth.json, runs `codex login --device-auth`
+    (or browser login), then stores the new credentials as a named profile.
     """
     from slop.store import validate_name
 
@@ -57,8 +57,9 @@ def add_account(name: str, *, device: bool = False) -> None:
     if device:
         cmd.append("--device-auth")
     print(
-        "\nSign in to the NEW Codex account.\n"
-        "Do not run `codex logout` — that can revoke a saved bucket.\n",
+        "\nSign in to the NEW Codex account"
+        + (" with the device code below." if device else " in the browser.")
+        + "\nDo not run `codex logout` — that can revoke a saved bucket.\n",
         flush=True,
     )
     try:

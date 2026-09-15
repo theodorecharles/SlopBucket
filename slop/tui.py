@@ -301,8 +301,8 @@ class NameModal(ModalScreen[str | None]):
 
 class AddModal(ModalScreen[AddSpec | None]):
     BINDINGS = [
-        Binding("enter", "browser", "browser login", show=True, priority=True),
-        Binding("ctrl+d", "device", "device login", show=True, priority=True),
+        Binding("enter", "device", "device login", show=True, priority=True),
+        Binding("ctrl+b", "browser", "browser login", show=True, priority=True),
         Binding("escape", "cancel", "cancel", show=True, priority=True),
     ]
     DEFAULT_CSS = """
@@ -323,7 +323,7 @@ class AddModal(ModalScreen[AddSpec | None]):
             yield Label("Add a Codex bucket")
             yield Label("Logs in a new account. Saved buckets are not logged out.")
             yield Input(placeholder="name, e.g. allie", id="name")
-            yield Label("enter  browser login      ctrl+d  device code      esc  cancel", classes="hint")
+            yield Label("enter  device code      ctrl+b  browser      esc  cancel", classes="hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -348,7 +348,7 @@ class AddModal(ModalScreen[AddSpec | None]):
         self.dismiss(None)
 
     def on_input_submitted(self) -> None:
-        self.action_browser()
+        self.action_device()
 
 
 class ConfirmModal(ModalScreen[bool]):
