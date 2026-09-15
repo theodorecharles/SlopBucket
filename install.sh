@@ -53,6 +53,33 @@ if changed:
         print(f"  {path}")
 else:
     print("No slop alias found in shell startup files.")
+
+PIN_BEGIN = "# >>> slop >>>"
+PIN_END = "# <<< slop <<<"
+PIN = """# >>> slop >>>
+# SlopBucket CLI. Kill leftover aliases/functions so `slop` is this tool.
+unalias slop 2>/dev/null || true
+unset -f slop 2>/dev/null || true
+# <<< slop <<<
+"""
+
+def pin(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    if PIN_BEGIN in text:
+        pre, rest = text.split(PIN_BEGIN, 1)
+        if PIN_END in rest:
+            rest = rest.split(PIN_END, 1)[1]
+        else:
+            rest = ""
+        text = pre.rstrip() + "\n"
+    text = text.rstrip() + "\n\n" + PIN
+    path.write_text(text, encoding="utf-8")
+    print(f"Pinned unalias slop at end of {path}")
+
+for rc in (home / ".zshrc", home / ".zprofile", home / ".bashrc", home / ".bash_profile"):
+    if rc.is_file() or rc == home / ".zshrc":
+        pin(rc)
 PY
 }
 

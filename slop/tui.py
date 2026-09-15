@@ -8,7 +8,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
+from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
 from slop.config import Config, ensure as ensure_config, save as save_config
 from slop.quota import Quota, Window, fetch_all, until_label
@@ -256,17 +256,21 @@ class AddSpec:
 
 
 class NameModal(ModalScreen[str | None]):
+    BINDINGS = [
+        Binding("enter", "submit", "ok", show=True, priority=True),
+        Binding("escape", "cancel", "cancel", show=True, priority=True),
+    ]
     DEFAULT_CSS = """
     NameModal { align: center middle; }
     #dialog {
-        width: 56;
+        width: 64;
         height: auto;
         padding: 1 2;
         border: tall #bb9af7;
         background: #1c1c1c;
     }
     Input { margin: 1 0; }
-    Button { width: 1fr; }
+    .hint { color: #6c6c6c; }
     """
 
     def __init__(self, title: str, default: str = "", placeholder: str = "bucket name") -> None:
@@ -279,53 +283,47 @@ class NameModal(ModalScreen[str | None]):
         with Vertical(id="dialog"):
             yield Label(self._title)
             yield Input(value=self._default, placeholder=self._placeholder, id="name")
-            with Horizontal():
-                yield Button("OK", variant="primary", id="ok")
-                yield Button("Cancel", id="cancel")
+            yield Label("enter  ok      esc  cancel", classes="hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
 
-    def _submit(self) -> None:
+    def action_submit(self) -> None:
         value = self.query_one(Input).value.strip()
         self.dismiss(value or None)
 
-    def on_input_submitted(self) -> None:
-        self._submit()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "ok":
-            self._submit()
-        else:
-            self.dismiss(None)
-
-    def key_escape(self) -> None:
+    def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def on_input_submitted(self) -> None:
+        self.action_submit()
 
 
 class AddModal(ModalScreen[AddSpec | None]):
+    BINDINGS = [
+        Binding("enter", "browser", "browser login", show=True, priority=True),
+        Binding("ctrl+d", "device", "device login", show=True, priority=True),
+        Binding("escape", "cancel", "cancel", show=True, priority=True),
+    ]
     DEFAULT_CSS = """
     AddModal { align: center middle; }
     #dialog {
-        width: 62;
+        width: 64;
         height: auto;
         padding: 1 2;
         border: tall #bb9af7;
         background: #1c1c1c;
     }
     Input { margin: 1 0; }
-    Button { width: 1fr; margin-top: 1; }
+    .hint { color: #6c6c6c; }
     """
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("Add a Codex bucket")
-            yield Label("[dim]Logs in a new account. Saved buckets are not logged out.[/]", markup=True)
+            yield Label("Logs in a new account. Saved buckets are not logged out.")
             yield Input(placeholder="name, e.g. allie", id="name")
-            with Horizontal():
-                yield Button("Browser login", variant="primary", id="browser")
-                yield Button("Device code", id="device")
-            yield Button("Cancel", id="cancel")
+            yield Label("enter  browser login      ctrl+d  device code      esc  cancel", classes="hint")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -333,33 +331,43 @@ class AddModal(ModalScreen[AddSpec | None]):
     def _spec(self, device: bool) -> AddSpec | None:
         name = self.query_one(Input).value.strip()
         if not name:
-            self.app.notify("Name this bucket first", severity="warning")
             return None
         return AddSpec(name=name, device=device)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.dismiss(None)
-            return
-        spec = self._spec(device=event.button.id == "device")
+    def action_browser(self) -> None:
+        spec = self._spec(False)
         if spec:
             self.dismiss(spec)
 
-    def key_escape(self) -> None:
+    def action_device(self) -> None:
+        spec = self._spec(True)
+        if spec:
+            self.dismiss(spec)
+
+    def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def on_input_submitted(self) -> None:
+        self.action_browser()
 
 
 class ConfirmModal(ModalScreen[bool]):
+    BINDINGS = [
+        Binding("enter", "yes", "delete", show=True, priority=True),
+        Binding("y", "yes", "delete", show=False, priority=True),
+        Binding("n", "no", "cancel", show=False, priority=True),
+        Binding("escape", "no", "cancel", show=True, priority=True),
+    ]
     DEFAULT_CSS = """
     ConfirmModal { align: center middle; }
     #dialog {
-        width: 56;
+        width: 64;
         height: auto;
         padding: 1 2;
         border: tall #f7768e;
         background: #1c1c1c;
     }
-    Button { width: 1fr; }
+    .hint { color: #6c6c6c; margin-top: 1; }
     """
 
     def __init__(self, question: str) -> None:
@@ -369,14 +377,12 @@ class ConfirmModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label(self._question)
-            with Horizontal():
-                yield Button("Delete", variant="error", id="yes")
-                yield Button("Cancel", id="no")
+            yield Label("enter/y  delete      esc/n  cancel", classes="hint")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "yes")
+    def action_yes(self) -> None:
+        self.dismiss(True)
 
-    def key_escape(self) -> None:
+    def action_no(self) -> None:
         self.dismiss(False)
 
 
@@ -440,7 +446,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
     }
     """
     BINDINGS = [
-        Binding("enter", "launch", "Launch", show=True, priority=True),
+        Binding("enter", "launch", "Launch", show=True),
         Binding("s", "switch", "Switch", show=True),
         Binding("a", "add", "Add", show=True),
         Binding("d", "delete", "Delete", show=True),
@@ -610,9 +616,10 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.reload()
 
     def action_switch(self) -> None:
+        if self._modal_open():
+            return
         name = self._selected_name()
         if not name:
-            self.notify("No bucket selected", severity="warning")
             return
         try:
             switch_to(name)
@@ -622,10 +629,14 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.notify(f"switched to {name} · restart Codex if it's already running")
         self.reload()
 
+    def _modal_open(self) -> bool:
+        return len(self.screen_stack) > 1
+
     def action_launch(self) -> None:
+        if self._modal_open():
+            return
         name = self._selected_name()
         if not name:
-            self.notify("No bucket selected", severity="warning")
             return
         try:
             switch_to(name)
