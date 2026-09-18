@@ -12,7 +12,7 @@ from slop.store import (
 )
 
 
-def _auth(email: str, plan: str = "pro") -> dict:
+def _auth(email: str, plan: str = "pro", *, user_id: str | None = None, account_id: str = "acct") -> dict:
     # Minimal unsigned JWT-shaped payload (header.payload.sig) for identity parsing.
     import base64
 
@@ -27,7 +27,8 @@ def _auth(email: str, plan: str = "pro") -> dict:
             "name": "Ted Roddy",
             "https://api.openai.com/auth": {
                 "chatgpt_plan_type": plan,
-                "chatgpt_account_id": "acct",
+                "chatgpt_account_id": account_id,
+                "chatgpt_user_id": user_id,
             },
         }
     )
@@ -38,7 +39,7 @@ def _auth(email: str, plan: str = "pro") -> dict:
             "access_token": token,
             "id_token": token,
             "refresh_token": "refresh",
-            "account_id": "acct",
+            "account_id": account_id,
         },
     }
 
@@ -65,6 +66,14 @@ def test_save_and_switch(tmp_path, monkeypatch):
 def test_suggest_name_fallback():
     assert suggest_name(Identity(email="me@x.com")) == "account"
     assert suggest_name(Identity(email="allie@x.com")) == "allie"
+
+
+def test_identity_includes_stable_user_and_workspace_ids(tmp_path):
+    path = tmp_path / "auth.json"
+    path.write_text(json.dumps(_auth("old@example.com", user_id="user-123", account_id="workspace-456")))
+    ident = identity_from_auth(path)
+    assert ident.user_id == "user-123"
+    assert ident.account_id == "workspace-456"
 
 
 def test_file_store_written(tmp_path, monkeypatch):

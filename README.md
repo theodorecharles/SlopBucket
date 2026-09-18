@@ -59,6 +59,9 @@ used and cannot be renewed, a prompt offers reauthorization. Accept it to displa
 the device code and sign-in link. You can also press `l`, or run `slop reauth NAME`.
 The bucket keeps its name and the active selection is preserved. Cancelling or
 signing into the wrong account leaves the saved login unchanged.
+Reauthorization matches the saved ChatGPT user and workspace IDs, allowing
+email aliases or email changes on the same account. Older credentials without
+a user ID fall back to matching the email address.
 The dashboard closes while device login runs, then reopens after the new
 credentials are saved. If login validation fails, the reason stays visible
 until you press Enter; press `l` to retry. Ctrl-C cancels the login.

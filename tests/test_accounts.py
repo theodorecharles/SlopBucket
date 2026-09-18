@@ -51,3 +51,42 @@ def test_failed_reauth_preserves_existing_login(saved, monkeypatch, failure):
         accounts.reauthorize_account("ted")
     assert saved.read_bytes() == before
     assert current_name() == "allie"
+
+
+def test_reauth_accepts_email_alias_for_same_user_and_workspace(saved, monkeypatch):
+    from slop.refresh import read_status, record_status
+    from slop.store import identity_from_auth
+    saved.write_text(json.dumps(_auth("me@tedcharles.net", user_id="ted-user")))
+    record_status("ted", "reauth_required", "Old login expired")
+    def login(cmd, *, env, check):
+        data = _auth("me@tedroddy.net", user_id="ted-user")
+        data["tokens"]["refresh_token"] = "new-refresh"
+        (Path(env["CODEX_HOME"]) / "auth.json").write_text(json.dumps(data))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(accounts.subprocess, "run", login)
+    accounts.reauthorize_account("ted")
+    assert identity_from_auth(saved).email == "me@tedroddy.net"
+    assert json.loads(saved.read_text())["tokens"]["refresh_token"] == "new-refresh"
+    assert read_status("ted")["state"] == "fresh"
+    assert current_name() == "allie"
+
+
+@pytest.mark.parametrize("user_id,account_id,email", [
+    ("different-user", "acct", "ted@example.com"),
+    ("different-user", "acct", "someone@example.com"),
+    (None, "acct", "ted@example.com"),
+    ("ted-user", "different-workspace", "ted@example.com"),
+])
+def test_reauth_rejects_different_user_or_workspace_even_with_matching_email(
+    saved, monkeypatch, user_id, account_id, email
+):
+    saved.write_text(json.dumps(_auth("ted@example.com", user_id="ted-user")))
+    before = saved.read_bytes()
+    def login(cmd, *, env, check):
+        data = _auth(email, user_id=user_id, account_id=account_id)
+        (Path(env["CODEX_HOME"]) / "auth.json").write_text(json.dumps(data))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(accounts.subprocess, "run", login)
+    with pytest.raises(accounts.AddError):
+        accounts.reauthorize_account("ted")
+    assert saved.read_bytes() == before

@@ -77,6 +77,7 @@ class Identity:
     plan: str | None = None
     name: str | None = None
     account_id: str | None = None
+    user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,7 @@ def identity_from_auth(path: Path) -> Identity:
     tokens = data.get("tokens") if isinstance(data, dict) else None
     if not isinstance(tokens, dict):
         return Identity()
-    email = plan = display = account_id = None
+    email = plan = display = account_id = user_id = None
     for key in ("id_token", "access_token"):
         payload = jwt_payload(str(tokens.get(key) or ""))
         if not payload:
@@ -127,6 +128,7 @@ def identity_from_auth(path: Path) -> Identity:
         if isinstance(auth, dict):
             plan = plan or auth.get("chatgpt_plan_type")
             account_id = account_id or auth.get("chatgpt_account_id")
+            user_id = user_id or auth.get("chatgpt_user_id")
     token_account = tokens.get("account_id")
     if isinstance(token_account, str) and not account_id:
         account_id = token_account
@@ -135,6 +137,7 @@ def identity_from_auth(path: Path) -> Identity:
         plan=str(plan) if plan else None,
         name=str(display) if display else None,
         account_id=str(account_id) if account_id else None,
+        user_id=str(user_id) if user_id else None,
     )
 
 

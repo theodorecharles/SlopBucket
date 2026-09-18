@@ -75,10 +75,20 @@ def reauthorize_account(name: str, *, device: bool = True) -> None:
                 raise ValueError("missing tokens")
         except (ValueError, AttributeError) as exc:
             raise AddError("login returned incomplete credentials; bucket unchanged") from exc
-        if expected.email and (actual.email or "").lower() != expected.email.lower():
+        # Email may change or have aliases. A workspace ID alone is not enough:
+        # multiple users can belong to the same workspace. Prefer the stable
+        # ChatGPT user ID, with email only as a fallback for older credentials.
+        same_user = (
+            actual.user_id == expected.user_id
+            if expected.user_id
+            else not expected.email or (actual.email or "").lower() == expected.email.lower()
+        )
+        if not same_user:
             raise AddError(
                 f"signed into a different account ({actual.email or 'unknown'}); "
-                f"bucket {name!r} needs {expected.email}. Bucket unchanged."
+                f"bucket {name!r} needs its original ChatGPT user"
+                + (f" ({expected.email})" if expected.email else "")
+                + ". Bucket unchanged."
             )
         if expected.account_id and actual.account_id != expected.account_id:
             raise AddError(
