@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "slop"
-version = "0.2.0"
+version = "0.2.1"
 description = "TUI dashboard for multiple OpenAI Codex / ChatGPT accounts"
 readme = "README.md"
 requires-python = ">=3.11"

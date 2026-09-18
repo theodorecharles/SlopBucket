@@ -80,3 +80,28 @@ def test_transient_error_does_not_prompt_login(tmp_path, monkeypatch):
             await pilot.pause()
             assert not isinstance(app.screen, tui.ConfirmModal)
     asyncio.run(scenario())
+
+
+def test_login_prompt_exits_tui_before_starting_interactive_login(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from slop import accounts, tui
+    from test_store import _auth
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setenv("SLOP_CONFIG", str(tmp_path / "slop.toml"))
+    (tmp_path / "auth.d").mkdir()
+    (tmp_path / "auth.d" / "ted.json").write_text(json.dumps(_auth("ted@example.com")))
+    monkeypatch.setattr(tui, "fetch_all", lambda: {"ted": Quota(name="ted", ok=False, reauth_required=True)})
+    def unexpected_login(*args, **kwargs):
+        raise AssertionError("Login must not run inside Textual")
+    monkeypatch.setattr(accounts, "reauthorize_account", unexpected_login)
+    async def scenario():
+        prompted = set()
+        app = tui.SlopApp(reauth_prompted=prompted)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, tui.ConfirmModal)
+            await pilot.press("enter")
+        assert app.return_value == ("reauth", "ted", [])
+        assert prompted == {"ted"}
+    asyncio.run(scenario())

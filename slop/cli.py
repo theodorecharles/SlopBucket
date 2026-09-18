@@ -270,18 +270,41 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
 
 def cmd_tui(_args: argparse.Namespace) -> int:
+    from slop.accounts import add_account, reauthorize_account
+    from slop.rpc import RpcError
     from slop.tui import SlopApp
 
     ensure_file_store()
-    result = SlopApp().run()
-    if isinstance(result, tuple) and result and result[0] == "launch":
-        _, name, extra = result
+    prompted: set[str] = set()
+    selected_name = None
+    while True:
+        result = SlopApp(reauth_prompted=prompted, selected_name=selected_name).run()
+        if not isinstance(result, tuple) or not result:
+            return 0
+        action, name, extra = result
+        if action == "launch":
+            try:
+                switch_to(name)
+            except StoreError as exc:
+                _die(str(exc))
+            return _exec_codex(extra)
+        if action not in {"reauth", "add"}:
+            return 0
+        # The previous app and its workers have shut down. Login owns the
+        # terminal until it finishes, then we create a fresh dashboard.
+        selected_name = name
+        prompted.add(name)
         try:
-            switch_to(name)
-        except StoreError as exc:
-            _die(str(exc))
-        return _exec_codex(extra)
-    return 0
+            login = reauthorize_account if action == "reauth" else add_account
+            login(name, device="--browser" not in extra)
+        except (StoreError, RpcError, OSError) as exc:
+            print(f"\nslop: {exc}", file=sys.stderr, flush=True)
+            try:
+                input("Press Enter to return to your buckets (l retries login). ")
+            except (KeyboardInterrupt, EOFError):
+                return 0
+        except KeyboardInterrupt:
+            return 0
 
 
 def build_parser() -> argparse.ArgumentParser:

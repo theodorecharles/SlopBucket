@@ -75,9 +75,16 @@ def reauthorize_account(name: str, *, device: bool = True) -> None:
                 raise ValueError("missing tokens")
         except (ValueError, AttributeError) as exc:
             raise AddError("login returned incomplete credentials; bucket unchanged") from exc
-        if ((expected.account_id and actual.account_id != expected.account_id) or
-                (expected.email and (actual.email or "").lower() != expected.email.lower())):
-            raise AddError("signed into a different account; bucket unchanged")
+        if expected.email and (actual.email or "").lower() != expected.email.lower():
+            raise AddError(
+                f"signed into a different account ({actual.email or 'unknown'}); "
+                f"bucket {name!r} needs {expected.email}. Bucket unchanged."
+            )
+        if expected.account_id and actual.account_id != expected.account_id:
+            raise AddError(
+                "signed into a different account or workspace; "
+                f"choose the original workspace for bucket {name!r}. Bucket unchanged."
+            )
         with profile_lock(name):
             if not path.is_file() or identity_from_auth(path) != expected:
                 raise AddError("bucket changed during login; please retry")

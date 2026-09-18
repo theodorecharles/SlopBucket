@@ -463,15 +463,16 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
     def action_help_quit(self) -> None:
         self.exit()
 
-    def __init__(self) -> None:
+    def __init__(self, *, reauth_prompted: set[str] | None = None, selected_name: str | None = None) -> None:
         super().__init__()
         self.register_theme(GROK_NIGHT)
         self.theme = "groknight"
         self.cfg: Config = ensure_config()
         self.quotas: dict[str, Quota] = {}
         self.loading: set[str] = set()
-        self._reauth_prompted: set[str] = set()
+        self._reauth_prompted = reauth_prompted if reauth_prompted is not None else set()
         self._reauth_running = False
+        self._initial_selection = selected_name
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True, icon="◆")
@@ -541,7 +542,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         profiles = list_profiles()
         lv = self.query_one("#buckets", ListView)
         empty = self.query_one("#empty", Static)
-        current = current_name()
+        current = self._initial_selection or current_name()
         keep = lv.index
         existing = {
             item.bucket_name: item
@@ -593,6 +594,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                 if profile.name == current:
                     lv.index = i
                     break
+        self._initial_selection = None
         self._update_summary()
         try:
             lv.focus()
@@ -647,21 +649,14 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                 ))
                 if ok:
                     self._reauthorize(name)
+                    return
         finally:
             self._reauth_running = False
 
     def _reauthorize(self, name: str) -> None:
-        from slop.accounts import reauthorize_account
-        from slop.rpc import RpcError
-        try:
-            with self.suspend():
-                reauthorize_account(name)
-        except (StoreError, RpcError) as exc:
-            self.notify(str(exc), severity="error", timeout=10)
-            return
-        self.quotas.pop(name, None)
-        self.notify(f"reauthorized {name}")
-        self.action_refresh()
+        # Finish Textual's event loop before a blocking, interactive login.
+        # App.suspend() can leave the driver suspended when validation raises.
+        self.exit(("reauth", name, []))
 
     def action_reauthorize(self) -> None:
         if self._modal_open() or self._reauth_running:
@@ -713,20 +708,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         spec = await self.push_screen_wait(AddModal())
         if spec is None:
             return
-        from slop.accounts import AddError, add_account
-
-        with self.suspend():
-            try:
-                add_account(spec.name, device=spec.device)
-            except AddError as exc:
-                self.notify(str(exc), severity="error")
-                return
-            except StoreError as exc:
-                self.notify(str(exc), severity="error")
-                return
-        self.notify(f"added {spec.name}")
-        self.reload()
-        self.action_refresh()
+        self.exit(("add", spec.name, [] if spec.device else ["--browser"]))
 
     @work
     async def action_delete(self) -> None:
