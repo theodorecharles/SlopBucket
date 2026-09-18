@@ -35,7 +35,19 @@ Do **not** run `codex logout` to change accounts. Logout can revoke a saved refr
 
 ## Keep accounts renewed with PM2
 
-With SlopBucket, Codex, and PM2 installed, run from this checkout:
+Install or update SlopBucket **and** its PM2 service on Debian/Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/theodorecharles/SlopBucket/main/install.sh | bash -s -- --pm2
+```
+
+Requires Codex, Node.js/npm, curl, and tar. The installer sets up uv, a compatible
+Python, and PM2 if needed. It updates only `slop-token-refresh` and preserves
+other PM2 apps. Re-running the command fetches current main, including when run
+from an older checkout. The service configuration is saved to
+`~/.config/slop/ecosystem.config.js` (honoring `XDG_CONFIG_HOME`).
+
+To install a local checkout instead:
 
 ```bash
 bash install-pm2.sh

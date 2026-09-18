@@ -3,10 +3,14 @@ set -euo pipefail
 umask 077
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:${PATH}"
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 command -v uv >/dev/null
-command -v pm2 >/dev/null
 command -v codex >/dev/null
+command -v node >/dev/null
+if ! command -v pm2 >/dev/null; then
+  command -v npm >/dev/null || { echo "Install npm before installing PM2." >&2; exit 1; }
+  npm install --global --prefix "${HOME}/.local" pm2
+fi
 
 # Keep the existing saved process list recoverable, including stopped apps
 # absent from the current daemon. Never print process environments.
@@ -17,11 +21,20 @@ if [[ -f "${pm2_dir}/dump.pm2" ]]; then
   cp "${pm2_dir}/dump.pm2" "${backup_dir}/dump.pm2"
 fi
 
-uv tool install --force "$repo_dir"
-pm2 startOrRestart "${repo_dir}/ecosystem.config.js" --only slop-token-refresh --update-env
+if [[ "${1:-}" != --skip-install ]]; then
+  uv tool install --force --python '>=3.11' "$repo_dir"
+fi
+tool_dir="$(uv tool dir)"
+tool_bin="$(uv tool dir --bin)"
+export PATH="${tool_bin}:${PATH}"
+export SLOP_BIN="${tool_bin}/slop"
+service_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/slop"
+mkdir -p "$service_dir"
+cp "${repo_dir}/ecosystem.config.js" "${service_dir}/ecosystem.config.js"
+pm2 startOrRestart "${service_dir}/ecosystem.config.js" --only slop-token-refresh --update-env
 pm2 save
 
-python3 - "$pm2_dir" "$backup_dir" <<'PY'
+"${tool_dir}/slop/bin/python" - "$pm2_dir" "$backup_dir" <<'PY'
 import json
 import os
 import sys
