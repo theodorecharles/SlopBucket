@@ -71,6 +71,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                     else {
                         "ok": q.ok,
                         "error": q.error,
+                        "reauth_required": q.reauth_required,
                         "blocked": q.blocked,
                         "credits": q.credits,
                         "windows": [
@@ -137,6 +138,30 @@ def cmd_save(args: argparse.Namespace) -> int:
         _die(str(exc))
     print(f"saved {args.name}")
     return 0
+
+
+def cmd_reauth(args: argparse.Namespace) -> int:
+    from slop.accounts import reauthorize_account
+    from slop.rpc import RpcError
+    try:
+        reauthorize_account(args.name, device=not args.browser)
+    except (StoreError, RpcError) as exc:
+        _die(str(exc))
+    print(f"reauthorized {args.name}")
+    return 0
+
+
+def cmd_refresh_tokens(args: argparse.Namespace) -> int:
+    from slop.refresh import run_service
+    return run_service(interval=args.interval, once=args.once, force=args.force)
+
+
+def _check_interval(value: str) -> float:
+    import math
+    number = float(value)
+    if not math.isfinite(number) or number < 30:
+        raise argparse.ArgumentTypeError("interval must be at least 30 seconds")
+    return number
 
 
 def cmd_rm(args: argparse.Namespace) -> int:
@@ -286,6 +311,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p.add_argument("--browser", action="store_true", help="use local-browser login instead of device code")
     p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser("reauth", help="reauthorize an existing bucket without deleting it")
+    p.add_argument("name")
+    p.add_argument("--browser", action="store_true")
+    p.set_defaults(func=cmd_reauth)
+
+    p = sub.add_parser("refresh-tokens", help="keep saved account tokens renewed (for PM2)")
+    p.add_argument("--once", action="store_true", help="check every bucket once and exit")
+    p.add_argument("--force", action="store_true", help="request renewal even when tokens are fresh")
+    p.add_argument("--interval", type=_check_interval, default=300, help="check interval in seconds (default: 300)")
+    p.set_defaults(func=cmd_refresh_tokens)
 
     p = sub.add_parser("save", help="save the current Codex login as a named bucket")
     p.add_argument("name")

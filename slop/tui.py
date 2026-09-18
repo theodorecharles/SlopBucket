@@ -216,7 +216,8 @@ class BucketItem(ListItem):
             self._email = email
         if plan is not None:
             self._plan = plan
-        self.populate()
+        if self.is_mounted:
+            self.populate()
 
     def populate(self) -> None:
         badge = self.query_one("#badge", Label)
@@ -353,8 +354,8 @@ class AddModal(ModalScreen[AddSpec | None]):
 
 class ConfirmModal(ModalScreen[bool]):
     BINDINGS = [
-        Binding("enter", "yes", "delete", show=True, priority=True),
-        Binding("y", "yes", "delete", show=False, priority=True),
+        Binding("enter", "yes", "confirm", show=True, priority=True),
+        Binding("y", "yes", "confirm", show=False, priority=True),
         Binding("n", "no", "cancel", show=False, priority=True),
         Binding("escape", "no", "cancel", show=True, priority=True),
     ]
@@ -370,14 +371,15 @@ class ConfirmModal(ModalScreen[bool]):
     .hint { color: #6c6c6c; margin-top: 1; }
     """
 
-    def __init__(self, question: str) -> None:
+    def __init__(self, question: str, verb: str = "delete") -> None:
         super().__init__()
         self._question = question
+        self._verb = verb
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label(self._question)
-            yield Label("enter/y  delete      esc/n  cancel", classes="hint")
+            yield Label(f"enter/y  {self._verb}      esc/n  cancel", classes="hint")
 
     def action_yes(self) -> None:
         self.dismiss(True)
@@ -452,6 +454,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         Binding("d", "delete", "Delete", show=True),
         Binding("n", "rename", "Rename", show=True),
         Binding("r", "refresh", "Refresh", show=True),
+        Binding("l", "reauthorize", "Reauthorize", show=True),
         Binding("f", "toggle_full", "Full access", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("ctrl+c", "quit", "Quit", show=False, priority=True),
@@ -467,6 +470,8 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.cfg: Config = ensure_config()
         self.quotas: dict[str, Quota] = {}
         self.loading: set[str] = set()
+        self._reauth_prompted: set[str] = set()
+        self._reauth_running = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True, icon="◆")
@@ -580,6 +585,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                     profile.name in self.loading,
                 )
             )
+        lv.index = 0
         if keep is not None and keep < len(profiles):
             lv.index = keep
         elif current:
@@ -618,6 +624,52 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.quotas.update(results)
         self.loading.clear()
         self.reload()
+        self.prompt_reauthorization()
+
+    @work(group="reauth")
+    async def prompt_reauthorization(self) -> None:
+        if self._reauth_running:
+            return
+        self._reauth_running = True
+        try:
+            for name, quota in list(self.quotas.items()):
+                if not quota.reauth_required or name in self._reauth_prompted:
+                    continue
+                # Do not replace a modal the user is already interacting with.
+                import asyncio
+                while self._modal_open():
+                    await asyncio.sleep(0.2)
+                if name not in {p.name for p in list_profiles()}:
+                    continue
+                self._reauth_prompted.add(name)
+                ok = await self.push_screen_wait(ConfirmModal(
+                    f"{name} needs a new login. Reauthorize with a device code?", "reauthorize"
+                ))
+                if ok:
+                    self._reauthorize(name)
+        finally:
+            self._reauth_running = False
+
+    def _reauthorize(self, name: str) -> None:
+        from slop.accounts import reauthorize_account
+        from slop.rpc import RpcError
+        try:
+            with self.suspend():
+                reauthorize_account(name)
+        except (StoreError, RpcError) as exc:
+            self.notify(str(exc), severity="error", timeout=10)
+            return
+        self.quotas.pop(name, None)
+        self.notify(f"reauthorized {name}")
+        self.action_refresh()
+
+    def action_reauthorize(self) -> None:
+        if self._modal_open() or self._reauth_running:
+            return
+        name = self._selected_name()
+        if name:
+            self._reauth_prompted.add(name)
+            self._reauthorize(name)
 
     def action_switch(self) -> None:
         if self._modal_open():

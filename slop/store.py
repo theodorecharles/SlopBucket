@@ -234,29 +234,28 @@ def switch_to(name: str, *, replace_unmanaged: bool = False) -> None:
 
 
 def _write_profile_bytes(name: str, data: bytes) -> Path:
+    from slop.refresh import atomic_write
     ensure_auth_dir()
     dest = profile_path(name)
-    tmp = dest.with_name(f".{name}.{os.getpid()}.tmp")
-    tmp.write_bytes(data)
-    tmp.chmod(0o600)
-    tmp.replace(dest)
-    dest.chmod(0o600)
+    atomic_write(dest, data)
     return dest
 
 
 def save_current(name: str, *, overwrite: bool = False) -> Profile:
     """Snapshot the live auth.json into a named bucket and point auth.json at it."""
-    validate_name(name)
-    active = auth_path()
-    if not active.exists():
-        raise StoreError("no current Codex login; run `codex login` first")
-    dest = profile_path(name)
-    if dest.exists() and not overwrite:
-        raise StoreError(f"bucket {name!r} already exists")
-    data = active.read_bytes()
-    _write_profile_bytes(name, data)
-    switch_to(name, replace_unmanaged=True)
-    return next(p for p in list_profiles() if p.name == name)
+    from slop.refresh import profile_lock
+    with profile_lock(name):
+        validate_name(name)
+        active = auth_path()
+        if not active.exists():
+            raise StoreError("no current Codex login; run `codex login` first")
+        dest = profile_path(name)
+        if dest.exists() and not overwrite:
+            raise StoreError(f"bucket {name!r} already exists")
+        data = active.read_bytes()
+        _write_profile_bytes(name, data)
+        switch_to(name, replace_unmanaged=True)
+        return next(p for p in list_profiles() if p.name == name)
 
 
 def import_unmanaged(name: str) -> Profile:
@@ -266,24 +265,31 @@ def import_unmanaged(name: str) -> Profile:
 
 
 def remove(name: str) -> None:
-    dest = profile_path(name)
-    if not dest.is_file():
-        raise StoreError(f"no bucket named {name!r}")
-    if current_name() == name:
-        raise StoreError(f"refusing to remove the active bucket {name!r}; switch first")
-    dest.unlink()
+    from slop.refresh import profile_lock
+    with profile_lock(name):
+        dest = profile_path(name)
+        if not dest.is_file():
+            raise StoreError(f"no bucket named {name!r}")
+        if current_name() == name:
+            raise StoreError(f"refusing to remove the active bucket {name!r}; switch first")
+        dest.unlink()
 
 
 def rename(old: str, new: str) -> None:
-    validate_name(new)
-    src = profile_path(old)
-    dest = profile_path(new)
-    if not src.is_file():
-        raise StoreError(f"no bucket named {old!r}")
-    if dest.exists():
-        raise StoreError(f"bucket {new!r} already exists")
-    was_current = current_name() == old
-    src.rename(dest)
-    dest.chmod(0o600)
-    if was_current:
-        switch_to(new)
+    from slop.refresh import profile_lock
+    first, second = sorted((old, new))
+    if old == new:
+        raise StoreError("new bucket name must be different")
+    with profile_lock(first), profile_lock(second):
+        validate_name(new)
+        src = profile_path(old)
+        dest = profile_path(new)
+        if not src.is_file():
+            raise StoreError(f"no bucket named {old!r}")
+        if dest.exists():
+            raise StoreError(f"bucket {new!r} already exists")
+        was_current = current_name() == old
+        src.rename(dest)
+        dest.chmod(0o600)
+        if was_current:
+            switch_to(new)

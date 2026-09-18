@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 import time
+from pathlib import Path
 
 from slop.store import (
     StoreError,
@@ -22,10 +24,65 @@ class AddError(StoreError):
 
 
 def _codex_bin() -> str:
-    found = shutil.which("codex")
+    from slop.config import load
+    found = shutil.which(load().launch.bin)
     if not found:
         raise AddError("codex is not on PATH")
     return found
+
+
+def reauthorize_account(name: str, *, device: bool = True) -> None:
+    """Replace only this bucket after successful login, preserving selection.
+
+    Login uses a separate Codex home. Cancellation, failed login, and signing
+    into the wrong account leave all existing credentials untouched.
+    """
+    from slop.refresh import atomic_write, profile_lock, record_status
+    from slop.store import codex_home, identity_from_auth, profile_path
+
+    path = profile_path(name)
+    if not path.is_file():
+        raise AddError(f"no bucket named {name!r}")
+    expected = identity_from_auth(path)
+    binary = _codex_bin()
+    with tempfile.TemporaryDirectory(prefix=".slop-login-", dir=codex_home()) as temp:
+        home = Path(temp)
+        (home / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(home)
+        cmd = [binary, "login"]
+        if device:
+            cmd.append("--device-auth")
+        print(f"\nReauthorize {name}" + (f" ({expected.email})" if expected.email else "") +
+              ". Sign in using the link and code below.\n", flush=True)
+        try:
+            completed = subprocess.run(cmd, env=env, check=False)
+        except KeyboardInterrupt as exc:
+            raise AddError("login cancelled; bucket unchanged") from exc
+        except OSError as exc:
+            raise AddError("could not start Codex login; bucket unchanged") from exc
+        if completed.returncode != 0:
+            raise AddError(f"login exited {completed.returncode}; bucket unchanged")
+        fresh = home / "auth.json"
+        if not fresh.is_file():
+            raise AddError("login did not save credentials; bucket unchanged")
+        actual = identity_from_auth(fresh)
+        import json
+        try:
+            data = json.loads(fresh.read_text())
+            tokens = data.get("tokens") or {}
+            if not all(tokens.get(key) for key in ("access_token", "refresh_token", "id_token")):
+                raise ValueError("missing tokens")
+        except (ValueError, AttributeError) as exc:
+            raise AddError("login returned incomplete credentials; bucket unchanged") from exc
+        if ((expected.account_id and actual.account_id != expected.account_id) or
+                (expected.email and (actual.email or "").lower() != expected.email.lower())):
+            raise AddError("signed into a different account; bucket unchanged")
+        with profile_lock(name):
+            if not path.is_file() or identity_from_auth(path) != expected:
+                raise AddError("bucket changed during login; please retry")
+            atomic_write(path, fresh.read_bytes())
+            record_status(name, "fresh", "Account reauthorized")
 
 
 def add_account(name: str, *, device: bool = True) -> None:

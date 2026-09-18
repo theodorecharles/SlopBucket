@@ -27,3 +27,56 @@ def test_status_hides_internals():
     assert "ordinaryUsageAllowed" not in markup
     assert "empty" in markup
     assert "173 credits" in markup
+
+
+def test_expired_bucket_prompts_once_and_can_be_reauthorized(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from slop import tui
+    from test_store import _auth
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setenv("SLOP_CONFIG", str(tmp_path / "slop.toml"))
+    (tmp_path / "auth.d").mkdir()
+    (tmp_path / "auth.d" / "ted.json").write_text(json.dumps(_auth("ted@example.com")))
+    expired = Quota(name="ted", ok=False, error="Sign in again", reauth_required=True)
+    monkeypatch.setattr(tui, "fetch_all", lambda: {"ted": expired})
+    calls = []
+    monkeypatch.setattr(tui.SlopApp, "_reauthorize", lambda self, name: calls.append(name))
+
+    async def scenario():
+        app = tui.SlopApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, tui.ConfirmModal)
+            assert app.screen._verb == "reauthorize"
+            app._apply_quotas({"ted": expired})
+            await pilot.pause()
+            assert isinstance(app.screen, tui.ConfirmModal)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == ["ted"]
+            app._apply_quotas({"ted": expired})
+            await pilot.pause()
+            assert not isinstance(app.screen, tui.ConfirmModal)
+            await pilot.press("l")
+            assert calls == ["ted", "ted"]
+    asyncio.run(scenario())
+
+
+def test_transient_error_does_not_prompt_login(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from slop import tui
+    from test_store import _auth
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setenv("SLOP_CONFIG", str(tmp_path / "slop.toml"))
+    (tmp_path / "auth.d").mkdir()
+    (tmp_path / "auth.d" / "ted.json").write_text(json.dumps(_auth("ted@example.com")))
+    monkeypatch.setattr(tui, "fetch_all", lambda: {"ted": Quota(name="ted", ok=False, error="timeout")})
+    async def scenario():
+        app = tui.SlopApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not isinstance(app.screen, tui.ConfirmModal)
+    asyncio.run(scenario())
