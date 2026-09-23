@@ -42,6 +42,7 @@ class Quota:
     windows: list[Window] = field(default_factory=list)
     extra: list[tuple[str, list[Window]]] = field(default_factory=list)
     credits: float | None = None
+    banked_resets: int | None = None
     fetched_at: float = 0.0
 
     @property
@@ -91,6 +92,10 @@ def reset_clock(resets_at: int | None) -> str:
     return dt.strftime("%a %H:%M")
 
 
+def banked_resets_label(count: int | None) -> str:
+    return f"banked resets: {count if count is not None else 'unavailable'}"
+
+
 def _parse_window(raw: object) -> Window | None:
     if not isinstance(raw, dict):
         return None
@@ -135,6 +140,15 @@ def _credits(bucket: dict) -> float | None:
         return None
 
 
+def _banked_resets(result: dict) -> int | None:
+    summary = result.get("rateLimitResetCredits")
+    if not isinstance(summary, dict):
+        return None
+    # The detail list can be capped or absent; availableCount is authoritative.
+    count = summary.get("availableCount")
+    return count if type(count) is int and count >= 0 else None
+
+
 def parse_rate_limits(name: str, account: dict | None, result: dict) -> Quota:
     email = plan = None
     if isinstance(account, dict) and account.get("type") == "chatgpt":
@@ -175,6 +189,7 @@ def parse_rate_limits(name: str, account: dict | None, result: dict) -> Quota:
         windows=_windows_from_bucket(main) if isinstance(main, dict) else [],
         extra=extra,
         credits=_credits(main) if isinstance(main, dict) else None,
+        banked_resets=_banked_resets(result),
         fetched_at=time.time(),
     )
 

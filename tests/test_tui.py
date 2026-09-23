@@ -1,3 +1,6 @@
+import pytest
+from rich.text import Text
+
 from slop.tui import _split_bar, _status_markup
 from slop.quota import Quota, Window
 
@@ -105,3 +108,16 @@ def test_login_prompt_exits_tui_before_starting_interactive_login(tmp_path, monk
         assert app.return_value == ("reauth", "ted", [])
         assert prompted == {"ted"}
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("count, label", [(3, "3"), (0, "0"), (None, "unavailable")])
+def test_status_shows_banked_resets_even_when_empty(count, label):
+    quota = Quota(name="account", ok=True, ordinary_allowed=False, banked_resets=count)
+    status = Text.from_markup(_status_markup(quota, False)).plain
+    assert "empty" in status
+    assert f"banked resets: {label}" in status
+
+
+def test_status_keeps_banked_resets_while_refreshing():
+    quota = Quota(name="account", ok=True, banked_resets=2)
+    assert "banked resets: 2" in _status_markup(quota, True)

@@ -8,7 +8,7 @@ import sys
 
 from slop import __version__
 from slop.config import config_path, ensure as ensure_config, launch_command, load, save
-from slop.quota import fetch_all, fetch_quota, until_label
+from slop.quota import banked_resets_label, fetch_all, fetch_quota, until_label
 from slop.store import (
     StoreError,
     current_name,
@@ -38,6 +38,7 @@ def _print_profile_line(name: str, active: bool, quota=None) -> None:
     if quota and quota.ok:
         for window in quota.windows:
             bits.append(f"{window.label} {window.remaining_percent:.0f}% left")
+        bits.append(banked_resets_label(quota.banked_resets))
         if quota.blocked:
             bits.append("EMPTY")
     elif quota and not quota.ok:
@@ -74,6 +75,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                         "reauth_required": q.reauth_required,
                         "blocked": q.blocked,
                         "credits": q.credits,
+                        "banked_resets": q.banked_resets,
                         "windows": [
                             {
                                 "label": w.label,

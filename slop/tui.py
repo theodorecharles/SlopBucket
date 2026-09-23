@@ -11,7 +11,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
 from slop.config import Config, ensure as ensure_config, save as save_config
-from slop.quota import Quota, Window, fetch_all, until_label
+from slop.quota import Quota, Window, banked_resets_label, fetch_all, until_label
 from slop.theme import GREEN, GROK_NIGHT, GUTTER, MUTED, RED, YELLOW
 from slop.store import (
     StoreError,
@@ -103,7 +103,7 @@ def _status_markup(quota: Quota | None, loading: bool) -> str:
         status = f"[{YELLOW}]low[/]"
     else:
         status = f"[{GREEN}]ok[/]"
-    extras: list[str] = [status]
+    extras: list[str] = [status, f"[{MUTED}]{banked_resets_label(quota.banked_resets)}[/]"]
     credits = _fmt_credits(quota.credits)
     if credits:
         extras.append(f"[{MUTED}]{credits}[/]")

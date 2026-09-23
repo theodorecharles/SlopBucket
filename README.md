@@ -8,6 +8,11 @@ curl -fsSL https://raw.githubusercontent.com/theodorecharles/SlopBucket/main/ins
 
 Arrow keys move. Enter launches. `a` adds an account with device-code login (works on headless boxes). `d` deletes. `r` refreshes usage.
 
+Each account shows usage left and its banked reset count. `slop list --quota` and
+`slop quota` also show banked resets; `slop list --quota --json` includes
+`quota.banked_resets`. If Codex does not return a count, it displays as
+`unavailable` (`null` in JSON), rather than zero.
+
 ## Usage
 
 | Key / command | What it does |
