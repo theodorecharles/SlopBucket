@@ -12,7 +12,7 @@ from textual.worker import Worker
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
 from slop.config import Config, ensure as ensure_config, save as save_config
-from slop.quota import Quota, Window, banked_resets_label, fetch_all, until_label
+from slop.quota import Quota, Window, banked_resets_label, iter_quotas, until_label
 from slop.theme import GREEN, GROK_NIGHT, GUTTER, MUTED, RED, YELLOW
 from slop.store import (
     StoreError,
@@ -632,12 +632,15 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
 
     @work(thread=True, group="quota", exclusive=True)
     def fetch_quotas(self) -> None:
-        results = fetch_all()
-        self.call_from_thread(self._apply_quotas, results)
+        for name, quota in iter_quotas():
+            self.call_from_thread(self._apply_quotas, {name: quota})
+        self.call_from_thread(self._apply_quotas, {}, finished=True)
 
-    def _apply_quotas(self, results: dict[str, Quota]) -> None:
+    def _apply_quotas(self, results: dict[str, Quota], *, finished: bool = False) -> None:
         self.quotas.update(results)
-        self.loading.clear()
+        self.loading.difference_update(results)
+        if finished:
+            self.loading.clear()
         self.reload()
         self.prompt_reauthorization()
 

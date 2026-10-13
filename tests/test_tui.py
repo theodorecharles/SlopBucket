@@ -43,7 +43,7 @@ def test_expired_bucket_prompts_once_and_can_be_reauthorized(tmp_path, monkeypat
     (tmp_path / "auth.d").mkdir()
     (tmp_path / "auth.d" / "ted.json").write_text(json.dumps(_auth("ted@example.com")))
     expired = Quota(name="ted", ok=False, error="Sign in again", reauth_required=True)
-    monkeypatch.setattr(tui, "fetch_all", lambda: {"ted": expired})
+    monkeypatch.setattr(tui, "iter_quotas", lambda: iter({"ted": expired}.items()))
     calls = []
     monkeypatch.setattr(tui.SlopApp, "_reauthorize", lambda self, name: calls.append(name))
 
@@ -76,7 +76,7 @@ def test_transient_error_does_not_prompt_login(tmp_path, monkeypatch):
     monkeypatch.setenv("SLOP_CONFIG", str(tmp_path / "slop.toml"))
     (tmp_path / "auth.d").mkdir()
     (tmp_path / "auth.d" / "ted.json").write_text(json.dumps(_auth("ted@example.com")))
-    monkeypatch.setattr(tui, "fetch_all", lambda: {"ted": Quota(name="ted", ok=False, error="timeout")})
+    monkeypatch.setattr(tui, "iter_quotas", lambda: iter({"ted": Quota(name="ted", ok=False, error="timeout")}.items()))
     async def scenario():
         app = tui.SlopApp()
         async with app.run_test() as pilot:
@@ -94,7 +94,7 @@ def test_login_prompt_exits_tui_before_starting_interactive_login(tmp_path, monk
     monkeypatch.setenv("SLOP_CONFIG", str(tmp_path / "slop.toml"))
     (tmp_path / "auth.d").mkdir()
     (tmp_path / "auth.d" / "ted.json").write_text(json.dumps(_auth("ted@example.com")))
-    monkeypatch.setattr(tui, "fetch_all", lambda: {"ted": Quota(name="ted", ok=False, reauth_required=True)})
+    monkeypatch.setattr(tui, "iter_quotas", lambda: iter({"ted": Quota(name="ted", ok=False, reauth_required=True)}.items()))
     def unexpected_login(*args, **kwargs):
         raise AssertionError("Login must not run inside Textual")
     monkeypatch.setattr(accounts, "reauthorize_account", unexpected_login)
@@ -178,7 +178,7 @@ def test_timer_updates_usage_credits_and_resets_without_disturbing_dialog(
             for name in ("alice", "bob")
         }
 
-    monkeypatch.setattr(tui, "fetch_all", fetch)
+    monkeypatch.setattr(tui, "iter_quotas", lambda: iter(fetch().items()))
 
     async def scenario():
         app = tui.SlopApp(selected_name="bob")
@@ -225,7 +225,7 @@ def test_timer_and_manual_refresh_wait_for_slow_fetch(refresh_dashboard, monkeyp
         assert release.wait(timeout=5)
         return {"alice": Quota(name="alice", ok=True, credits=50, banked_resets=2)}
 
-    monkeypatch.setattr(tui, "fetch_all", fetch)
+    monkeypatch.setattr(tui, "iter_quotas", lambda: iter(fetch().items()))
 
     async def scenario():
         app = tui.SlopApp()
@@ -261,7 +261,7 @@ def test_empty_dashboard_skips_polling_until_bucket_appears(refresh_dashboard, m
         calls.append(None)
         return {"alice": Quota(name="alice", ok=True, banked_resets=1)}
 
-    monkeypatch.setattr(tui, "fetch_all", fetch)
+    monkeypatch.setattr(tui, "iter_quotas", lambda: iter(fetch().items()))
 
     async def scenario():
         app = tui.SlopApp()
@@ -272,5 +272,55 @@ def test_empty_dashboard_skips_polling_until_bucket_appears(refresh_dashboard, m
             (tmp_path / "auth.d" / "alice.json").write_text(saved)
             await wait_until(lambda: "alice" in app.quotas)
             assert app.quotas["alice"].banked_resets == 1
+
+    asyncio.run(scenario())
+
+
+def test_startup_shows_fast_account_and_accepts_input_while_another_is_pending(
+    refresh_dashboard, monkeypatch
+):
+    import asyncio
+    import threading
+    from slop import quota
+
+    tui, _ = refresh_dashboard
+    release = threading.Event()
+    slow_started = threading.Event()
+
+    def fetch(name):
+        if name == "alice":
+            slow_started.set()
+            assert release.wait(timeout=5)
+            raise RuntimeError("temporary failure")
+        return Quota(name=name, ok=True, credits=123, banked_resets=4)
+
+    # Use the real concurrent iterator and GUI worker. Only the network is fake.
+    monkeypatch.setattr(quota, "fetch_quota", fetch)
+
+    async def scenario():
+        app = tui.SlopApp()
+        async with app.run_test() as pilot:
+            try:
+                await wait_until(lambda: slow_started.is_set() and "bob" in app.quotas)
+                await pilot.pause()
+                assert app.loading == {"alice"}
+                assert "alice" not in app.quotas
+                bob = next(item for item in app.query(tui.BucketItem) if item.bucket_name == "bob")
+                footer = str(bob.query_one("#foot", tui.Static).render())
+                assert "123 credits" in footer
+                assert "banked resets: 4" in footer
+                await pilot.press("down")
+                assert app._selected_name() == "bob"
+                await pilot.press("n")
+                assert isinstance(app.screen, tui.NameModal)
+                await pilot.press("x")
+                assert app.screen.query_one(tui.Input).value.endswith("x")
+                assert not release.is_set()
+            finally:
+                release.set()
+            await wait_until(lambda: "alice" in app.quotas and not app.loading)
+            assert not app.quotas["alice"].ok
+            assert app.quotas["bob"].ok
+            assert isinstance(app.screen, tui.NameModal)
 
     asyncio.run(scenario())

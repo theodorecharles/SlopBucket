@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -236,18 +237,22 @@ def fetch_quota(name: str) -> Quota:
                      fetched_at=time.time())
 
 
-def fetch_all(profiles: list[Profile] | None = None) -> dict[str, Quota]:
+def iter_quotas(profiles: list[Profile] | None = None) -> Iterator[tuple[str, Quota]]:
+    """Yield each account's usage as soon as its concurrent request completes."""
     profiles = profiles if profiles is not None else list_profiles()
-    out: dict[str, Quota] = {}
     if not profiles:
-        return out
+        return
     workers = min(4, len(profiles))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futs = {pool.submit(fetch_quota, p.name): p.name for p in profiles}
         for fut in as_completed(futs):
             name = futs[fut]
             try:
-                out[name] = fut.result()
+                quota = fut.result()
             except Exception as exc:
-                out[name] = Quota(name=name, ok=False, error=str(exc), fetched_at=time.time())
-    return out
+                quota = Quota(name=name, ok=False, error=str(exc), fetched_at=time.time())
+            yield name, quota
+
+
+def fetch_all(profiles: list[Profile] | None = None) -> dict[str, Quota]:
+    return dict(iter_quotas(profiles))

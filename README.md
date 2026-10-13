@@ -11,6 +11,8 @@ Arrow keys move. Enter launches. `a` adds an account with device-code login (wor
 While the dashboard is open, usage, credits, and banked resets refresh automatically
 every 30 seconds. A slow refresh finishes before another begins; `r` still refreshes
 on demand. Your selection and open dialogs are preserved.
+The dashboard opens immediately and loads accounts concurrently, displaying each
+account's result as it arrives without waiting for slower accounts.
 
 Each account shows usage left and its banked reset count. `slop list --quota` and
 `slop quota` also show banked resets; `slop list --quota --json` includes
