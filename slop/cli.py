@@ -7,6 +7,7 @@ import shutil
 import sys
 
 from slop import __version__
+from slop.codex_update import UpdateCheck, ensure_updated, start_check
 from slop.config import config_path, ensure as ensure_config, launch_command, load, save
 from slop.quota import banked_resets_label, fetch_all, fetch_quota, until_label
 from slop.store import (
@@ -228,6 +229,7 @@ def cmd_config(args: argparse.Namespace) -> int:
         print(f"path {config_path()}")
         print(f"launch.full_access = {cfg.launch.full_access}")
         print(f"launch.bypass_hook_trust = {cfg.launch.bypass_hook_trust}")
+        print(f"launch.auto_update = {cfg.launch.auto_update}")
         print(f"launch.bin = {cfg.launch.bin}")
         print(f"launch.extra_args = {cfg.launch.extra_args}")
         return 0
@@ -236,6 +238,8 @@ def cmd_config(args: argparse.Namespace) -> int:
         cfg.launch.full_access = value.lower() in {"1", "true", "yes", "on"}
     elif key in {"launch.bypass_hook_trust", "bypass_hook_trust"}:
         cfg.launch.bypass_hook_trust = value.lower() in {"1", "true", "yes", "on"}
+    elif key in {"launch.auto_update", "auto_update"}:
+        cfg.launch.auto_update = value.lower() in {"1", "true", "yes", "on"}
     elif key in {"launch.bin", "bin"}:
         cfg.launch.bin = value
     else:
@@ -245,12 +249,26 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
-def _exec_codex(extra: list[str] | None = None) -> int:
+def _exec_codex(extra: list[str] | None = None, *, update_check: UpdateCheck | None = None) -> int:
+    selected_name = current_name()
     cfg = load()
     cmd = launch_command(cfg, extra)
     binary = shutil.which(cmd[0])
     if binary is None:
         _die(f"cannot find {cmd[0]} on PATH")
+    if cfg.launch.auto_update:
+        ensure_updated(binary, update_check)
+        # The updater may replace the executable's symlink or launcher.
+        binary = shutil.which(cmd[0])
+        if binary is None:
+            _die(f"cannot find {cmd[0]} after updating")
+        # Another Slop window may have switched accounts while we updated.
+        # Restore this launch's selection immediately before starting Codex.
+        if selected_name:
+            try:
+                switch_to(selected_name)
+            except StoreError as exc:
+                _die(str(exc))
     cmd[0] = binary
     print("launching: " + " ".join(cmd), file=sys.stderr)
     os.execvp(cmd[0], cmd)
@@ -279,6 +297,9 @@ def cmd_tui(_args: argparse.Namespace) -> int:
     ensure_file_store()
     prompted: set[str] = set()
     selected_name = None
+    cfg = load()
+    binary = shutil.which(cfg.launch.bin)
+    update_check = start_check(binary) if cfg.launch.auto_update and binary else None
     while True:
         result = SlopApp(reauth_prompted=prompted, selected_name=selected_name).run()
         if not isinstance(result, tuple) or not result:
@@ -289,7 +310,7 @@ def cmd_tui(_args: argparse.Namespace) -> int:
                 switch_to(name)
             except StoreError as exc:
                 _die(str(exc))
-            return _exec_codex(extra)
+            return _exec_codex(extra, update_check=update_check)
         if action not in {"reauth", "add"}:
             return 0
         # The previous app and its workers have shut down. Login owns the

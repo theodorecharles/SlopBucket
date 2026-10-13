@@ -44,6 +44,21 @@ Running Codex sessions keep their in-memory login. `/exit` and launch again afte
 
 Do **not** run `codex logout` to change accounts. Logout can revoke a saved refresh token.
 
+## Automatic Codex updates
+
+Slop checks for a newer stable Codex release in the background while the dashboard
+is open. When you launch an account, it installs an available update with
+`codex update`, then starts Codex with that same account and your launch arguments.
+`slop launch NAME` does the same check before launching. You do not need to rerun Slop.
+
+The updater supports npm, Homebrew, and standalone Codex installations and preserves
+their installation method. Already current, newer, and prerelease builds are left
+alone. Checks have time limits, and simultaneous launches share an update lock.
+If a check or update fails, Slop reports it and continues with the installed version.
+Slop disables Codex's separate startup update prompt for these launches only.
+
+To manage Codex updates yourself, run `slop config --set launch.auto_update false`.
+
 ## Keep accounts renewed with PM2
 
 Install or update SlopBucket **and** its PM2 service on Debian/Linux or macOS:
@@ -114,6 +129,7 @@ Config lives at `~/.config/slop/config.toml`:
 [launch]
 full_access = true
 bypass_hook_trust = true
+auto_update = true
 bin = "codex"
 extra_args = []
 ```
