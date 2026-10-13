@@ -8,6 +8,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.worker import Worker
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
 from slop.config import Config, ensure as ensure_config, save as save_config
@@ -27,6 +28,9 @@ from slop.store import (
     switch_to,
     unmanaged_auth_exists,
 )
+
+QUOTA_REFRESH_INTERVAL = 30
+
 
 def _bar_style(remaining: float) -> str:
     if remaining < 20:
@@ -470,6 +474,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.cfg: Config = ensure_config()
         self.quotas: dict[str, Quota] = {}
         self.loading: set[str] = set()
+        self._quota_worker: Worker[None] | None = None
         self._reauth_prompted = reauth_prompted if reauth_prompted is not None else set()
         self._reauth_running = False
         self._initial_selection = selected_name
@@ -511,6 +516,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                     self.notify(str(exc), severity="error")
         self.reload()
         self.action_refresh()
+        self.set_interval(QUOTA_REFRESH_INTERVAL, self.action_refresh)
 
     def _summary_text(self) -> str:
         profiles = list_profiles()
@@ -563,7 +569,8 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                 )
             self._update_summary()
             try:
-                lv.focus()
+                if not self._modal_open():
+                    lv.focus()
             except Exception:
                 pass
             return
@@ -597,7 +604,8 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self._initial_selection = None
         self._update_summary()
         try:
-            lv.focus()
+            if not self._modal_open():
+                lv.focus()
         except Exception:
             pass
 
@@ -612,10 +620,15 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.action_launch()
 
     def action_refresh(self) -> None:
+        # Cancelling a Textual thread worker does not stop its network requests.
+        # Let a slow refresh finish before accepting another timer tick or `r`.
+        if self._quota_worker is not None and not self._quota_worker.is_finished:
+            return
         names = [p.name for p in list_profiles()]
         self.loading = set(names)
         self.reload()
-        self.fetch_quotas()
+        if names:
+            self._quota_worker = self.fetch_quotas()
 
     @work(thread=True, group="quota", exclusive=True)
     def fetch_quotas(self) -> None:

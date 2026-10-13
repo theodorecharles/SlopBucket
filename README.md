@@ -8,6 +8,10 @@ curl -fsSL https://raw.githubusercontent.com/theodorecharles/SlopBucket/main/ins
 
 Arrow keys move. Enter launches. `a` adds an account with device-code login (works on headless boxes). `d` deletes. `r` refreshes usage.
 
+While the dashboard is open, usage, credits, and banked resets refresh automatically
+every 30 seconds. A slow refresh finishes before another begins; `r` still refreshes
+on demand. Your selection and open dialogs are preserved.
+
 Each account shows usage left and its banked reset count. `slop list --quota` and
 `slop quota` also show banked resets; `slop list --quota --json` includes
 `quota.banked_resets`. If Codex does not return a count, it displays as
