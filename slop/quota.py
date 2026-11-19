@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from slop.store import Profile, identity_from_auth, list_profiles, profile_path
@@ -29,6 +30,20 @@ class Window:
         return self.remaining_percent <= 0
 
 
+@dataclass(frozen=True)
+class DailyTokens:
+    day: date
+    tokens: int
+
+
+@dataclass(frozen=True)
+class UsageSummary:
+    lifetime_tokens: int | None = None
+    peak_daily_tokens: int | None = None
+    current_streak_days: int | None = None
+    longest_streak_days: int | None = None
+
+
 @dataclass
 class Quota:
     name: str
@@ -44,6 +59,8 @@ class Quota:
     credits: float | None = None
     banked_resets: int | None = None
     fetched_at: float = 0.0
+    daily: list[DailyTokens] = field(default_factory=list)
+    usage_summary: UsageSummary | None = None
 
     @property
     def blocked(self) -> bool:
@@ -194,13 +211,58 @@ def parse_rate_limits(name: str, account: dict | None, result: dict) -> Quota:
     )
 
 
-def _send_rpc(home: Path, timeout: float = 45.0) -> tuple[dict | None, dict]:
+def _clean_count(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def parse_account_usage(result: dict) -> tuple[list[DailyTokens], UsageSummary | None]:
+    """Parse an `account/usage/read` reply into daily buckets plus summary."""
+    if not isinstance(result, dict):
+        return [], None
+    by_day: dict[date, int] = {}
+    buckets = result.get("dailyUsageBuckets")
+    if isinstance(buckets, list):
+        for raw in buckets:
+            if not isinstance(raw, dict):
+                continue
+            tokens = _clean_count(raw.get("tokens"))
+            start = raw.get("startDate")
+            if tokens is None or not isinstance(start, str):
+                continue
+            try:
+                day = date.fromisoformat(start[:10])
+            except ValueError:
+                continue
+            by_day[day] = by_day.get(day, 0) + tokens
+    daily = [DailyTokens(day=day, tokens=by_day[day]) for day in sorted(by_day)]
+    summary = None
+    raw_summary = result.get("summary")
+    if isinstance(raw_summary, dict):
+        summary = UsageSummary(
+            lifetime_tokens=_clean_count(raw_summary.get("lifetimeTokens")),
+            peak_daily_tokens=_clean_count(raw_summary.get("peakDailyTokens")),
+            current_streak_days=_clean_count(raw_summary.get("currentStreakDays")),
+            longest_streak_days=_clean_count(raw_summary.get("longestStreakDays")),
+        )
+        if summary == UsageSummary():
+            summary = None
+    return daily, summary
+
+
+def _send_rpc(home: Path, timeout: float = 45.0) -> tuple[dict | None, dict, dict | None]:
     with CodexRPC(home, timeout=timeout) as rpc:
         account = rpc.call("account/read", {"refreshToken": False}).get("account")
         if account is None:
             raise RpcError("Sign in again: no saved account", reauth=True)
         result = rpc.call("account/rateLimits/read")
-        return account, result
+        # Daily usage history is best-effort: older Codex builds may not
+        # support it, and that must not hide rate-limit usage.
+        usage: dict | None = None
+        try:
+            usage = rpc.call("account/usage/read")
+        except RpcError:
+            usage = None
+        return account, result, usage
 
 
 def fetch_quota(name: str) -> Quota:
@@ -212,7 +274,7 @@ def fetch_quota(name: str) -> Quota:
             renew_locked(name, path)
             try:
                 with account_home(path) as home:
-                    account, result = _send_rpc(home)
+                    account, result, usage = _send_rpc(home)
             except RpcError as exc:
                 if not exc.reauth:
                     raise
@@ -220,8 +282,10 @@ def fetch_quota(name: str) -> Quota:
                 # before asking the user to sign in again.
                 renew_locked(name, path, force=True)
                 with account_home(path) as home:
-                    account, result = _send_rpc(home)
+                    account, result, usage = _send_rpc(home)
             quota = parse_rate_limits(name, account, result)
+            if usage is not None:
+                quota.daily, quota.usage_summary = parse_account_usage(usage)
         ident = identity_from_auth(path)
         if not quota.email:
             quota.email = ident.email
@@ -236,18 +300,21 @@ def fetch_quota(name: str) -> Quota:
                      fetched_at=time.time())
 
 
-def fetch_all(profiles: list[Profile] | None = None) -> dict[str, Quota]:
+def fetch_each(profiles: list[Profile] | None = None) -> Iterator[Quota]:
+    """Yield each account's quota as soon as its request finishes."""
     profiles = profiles if profiles is not None else list_profiles()
-    out: dict[str, Quota] = {}
     if not profiles:
-        return out
+        return
     workers = min(4, len(profiles))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futs = {pool.submit(fetch_quota, p.name): p.name for p in profiles}
         for fut in as_completed(futs):
             name = futs[fut]
             try:
-                out[name] = fut.result()
+                yield fut.result()
             except Exception as exc:
-                out[name] = Quota(name=name, ok=False, error=str(exc), fetched_at=time.time())
-    return out
+                yield Quota(name=name, ok=False, error=str(exc), fetched_at=time.time())
+
+
+def fetch_all(profiles: list[Profile] | None = None) -> dict[str, Quota]:
+    return {quota.name: quota for quota in fetch_each(profiles)}

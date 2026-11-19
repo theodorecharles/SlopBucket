@@ -102,6 +102,61 @@ def test_banked_resets_use_authoritative_count(count, details):
     assert quota.windows[0].remaining_percent == 0
 
 
+def test_parse_account_usage_buckets_and_summary():
+    from datetime import date
+
+    from slop.quota import parse_account_usage
+
+    daily, summary = parse_account_usage({
+        "summary": {
+            "lifetimeTokens": 123456,
+            "peakDailyTokens": 9000,
+            "currentStreakDays": 2,
+            "longestStreakDays": 5,
+        },
+        "dailyUsageBuckets": [
+            {"startDate": "2026-11-02", "tokens": 200},
+            {"startDate": "2026-11-01", "tokens": 100},
+            {"startDate": "2026-11-02", "tokens": 50},
+            {"startDate": "not-a-date", "tokens": 999},
+            {"startDate": "2026-11-03", "tokens": -1},
+            {"startDate": "2026-11-04", "tokens": True},
+            "junk",
+        ],
+    })
+    assert [(d.day, d.tokens) for d in daily] == [
+        (date(2026, 11, 1), 100),
+        (date(2026, 11, 2), 250),
+    ]
+    assert summary is not None
+    assert summary.lifetime_tokens == 123456
+    assert summary.peak_daily_tokens == 9000
+    assert parse_account_usage({}) == ([], None)
+    assert parse_account_usage({"dailyUsageBuckets": None, "summary": {}})[0] == []
+
+
+def test_fetch_each_yields_as_each_account_finishes(monkeypatch):
+    import time as time_mod
+    from pathlib import Path
+
+    from slop import quota as quota_mod
+    from slop.store import Identity, Profile
+
+    def fake_fetch(name):
+        if name == "slow":
+            time_mod.sleep(0.3)
+        return quota_mod.Quota(name=name, ok=True)
+
+    monkeypatch.setattr(quota_mod, "fetch_quota", fake_fetch)
+    profiles = [
+        Profile(name="slow", path=Path("slow.json"), identity=Identity(), active=False),
+        Profile(name="fast", path=Path("fast.json"), identity=Identity(), active=False),
+    ]
+    seen = [q.name for q in quota_mod.fetch_each(profiles)]
+    assert seen == ["fast", "slow"]
+    assert set(quota_mod.fetch_all(profiles)) == {"slow", "fast"}
+
+
 @pytest.mark.parametrize(
     "reset_fields",
     [

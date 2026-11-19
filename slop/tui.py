@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import calendar as _calendar
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
 from slop.config import Config, ensure as ensure_config, save as save_config
-from slop.quota import Quota, Window, banked_resets_label, fetch_all, until_label
-from slop.theme import GREEN, GROK_NIGHT, GUTTER, MUTED, RED, YELLOW
+from slop.quota import Quota, Window, banked_resets_label, fetch_each, until_label
+from slop.theme import BLUE, FG, GREEN, GROK_NIGHT, GUTTER, MAGENTA, MUTED, ORANGE, RED, YELLOW
 from slop.store import (
     StoreError,
     current_name,
@@ -116,6 +118,255 @@ def _status_markup(quota: Quota | None, loading: bool) -> str:
     if bits:
         extras.append(f"[{MUTED}]{'  ·  '.join(bits)}[/]")
     return "   ".join(extras)
+
+
+@dataclass(frozen=True)
+class ResetEvent:
+    name: str
+    label: str
+    when: datetime
+
+
+def collect_resets(
+    quotas: dict[str, Quota], *, now: datetime | None = None
+) -> list[ResetEvent]:
+    """Upcoming window resets across all loaded buckets, soonest first."""
+    now = now or datetime.now().astimezone()
+    out: list[ResetEvent] = []
+    for quota in quotas.values():
+        if quota is None or not quota.ok:
+            continue
+        for window in quota.windows:
+            if not window.resets_at:
+                continue
+            when = datetime.fromtimestamp(window.resets_at, tz=timezone.utc).astimezone()
+            if when <= now:
+                continue
+            out.append(ResetEvent(name=quota.name, label=window.label, when=when))
+    out.sort(key=lambda event: (event.when, event.name, event.label))
+    return out
+
+
+def next_resets(events: list[ResetEvent]) -> set[ResetEvent]:
+    """The soonest upcoming reset for each bucket."""
+    seen: set[str] = set()
+    out: set[ResetEvent] = set()
+    for event in events:
+        if event.name not in seen:
+            seen.add(event.name)
+            out.add(event)
+    return out
+
+
+def daily_totals(quotas: dict[str, Quota]) -> dict[date, int]:
+    totals: dict[date, int] = {}
+    for quota in quotas.values():
+        if quota is None or not quota.ok:
+            continue
+        for entry in quota.daily:
+            totals[entry.day] = totals.get(entry.day, 0) + entry.tokens
+    return totals
+
+
+def fmt_tokens(tokens: int) -> str:
+    if tokens >= 1_000_000_000:
+        return f"{tokens / 1e9:.2f}B"
+    if tokens >= 1_000_000:
+        value = tokens / 1e6
+        return f"{value:.0f}M" if value >= 100 else f"{value:.1f}M"
+    if tokens >= 10_000:
+        return f"{tokens / 1e3:.0f}k"
+    if tokens >= 1_000:
+        return f"{tokens / 1e3:.1f}k"
+    return str(tokens)
+
+
+def shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    index = (year * 12 + month - 1) + delta
+    return index // 12, index % 12 + 1
+
+
+def _token_style(tokens: int, peak: int) -> str:
+    if peak <= 0 or tokens <= 0:
+        return MUTED
+    ratio = tokens / peak
+    if ratio >= 0.85:
+        return f"bold {ORANGE}"
+    if ratio >= 0.5:
+        return YELLOW
+    if ratio >= 0.2:
+        return FG
+    return MUTED
+
+
+def render_calendar(
+    year: int,
+    month: int,
+    *,
+    today: date,
+    events: list[ResetEvent],
+    totals: dict[date, int],
+    width: int = 112,
+) -> Text:
+    cell_w = max(11, min(18, (width - 8) // 7))
+    by_day: dict[date, list[ResetEvent]] = {}
+    for event in events:
+        by_day.setdefault(event.when.date(), []).append(event)
+    upcoming = next_resets(events)
+    month_peak = max(
+        (tokens for day, tokens in totals.items() if (day.year, day.month) == (year, month)),
+        default=0,
+    )
+    earliest = min(totals) if totals else None
+    text = Text()
+    text.append(f"{_calendar.month_name[month]} {year}", style=f"bold {MAGENTA}")
+    text.append("    cells: tokens used that day · reset times below\n", style=MUTED)
+
+    def hline(left: str, mid: str, right: str) -> None:
+        text.append(left + mid.join("─" * cell_w for _ in range(7)) + right + "\n", style=GUTTER)
+
+    def append_row(cells: list[tuple[str, str]]) -> None:
+        text.append("│", style=GUTTER)
+        for segment, style in cells:
+            text.append(segment, style=style)
+            text.append("│", style=GUTTER)
+        text.append("\n")
+
+    def cell(content: str) -> str:
+        return (" " + content)[:cell_w].ljust(cell_w)
+
+    hline("┌", "┬", "┐")
+    append_row([(cell(weekday), f"bold {MUTED}") for weekday in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")])
+    weeks = _calendar.Calendar(firstweekday=0).monthdatescalendar(year, month)
+    for week in weeks:
+        hline("├", "┼", "┤")
+        lines: list[list[tuple[str, str]]] = [[] for _ in range(5)]
+        for day in week:
+            day_events = by_day.get(day, [])
+            if day == today:
+                day_style = f"bold #141414 on {MAGENTA}"
+            elif day_events:
+                day_style = f"bold #141414 on {GREEN}"
+            elif day.month == month:
+                day_style = FG
+            else:
+                day_style = MUTED
+            lines[0].append((cell(f"{day.day:>2}"), day_style))
+            tokens = totals.get(day)
+            if tokens is None and earliest is not None and earliest <= day <= today:
+                tokens = 0
+            token_text = f"{fmt_tokens(tokens)} tok" if tokens is not None and day <= today else ""
+            lines[1].append((cell(token_text), _token_style(tokens or 0, month_peak)))
+            shown = day_events[:3] if len(day_events) <= 3 else day_events[:2]
+            for slot in range(3):
+                if slot < len(shown):
+                    event = shown[slot]
+                    entry = f"{event.when:%H:%M} {event.name} {event.label}"
+                    style = f"bold {GREEN}" if event in upcoming else BLUE
+                elif slot == 2 and len(day_events) > 3:
+                    entry = f"+{len(day_events) - 2} more"
+                    style = MUTED
+                else:
+                    entry, style = "", MUTED
+                lines[2 + slot].append((cell(entry), style))
+        for line in lines:
+            append_row(line)
+    hline("└", "┴", "┘")
+    text.append("today", style=f"bold #141414 on {MAGENTA}")
+    text.append("  ", style=MUTED)
+    text.append("reset day", style=f"bold #141414 on {GREEN}")
+    text.append("  bold green entry = that bucket's next reset", style=MUTED)
+    text.append("\n↑ previous month   ↓ next month   c buckets   r refresh", style=MUTED)
+    return text
+
+
+def render_calendar_detail(
+    year: int,
+    month: int,
+    *,
+    quotas: dict[str, Quota],
+    events: list[ResetEvent],
+    now: datetime,
+    loading: bool,
+) -> Text:
+    text = Text()
+    text.append("Upcoming resets\n", style=f"bold {FG}")
+    upcoming = next_resets(events)
+    if events:
+        for event in events[:12]:
+            stamp = int(event.when.timestamp())
+            line = (
+                f"  {event.when:%a %b %d %H:%M}  {event.name:<14} "
+                f"{event.label:<3} window  (in {until_label(stamp, now=now.timestamp())})"
+            )
+            text.append(line, style=FG)
+            if event in upcoming:
+                text.append(f"   ← next for {event.name}", style=f"bold {GREEN}")
+            text.append("\n")
+    elif loading:
+        text.append("  fetching usage…\n", style=MUTED)
+    else:
+        text.append("  no upcoming resets loaded\n", style=MUTED)
+    text.append(f"\nTokens · {_calendar.month_name[month]} {year}\n", style=f"bold {FG}")
+    rows: list[tuple[str, int, Quota]] = []
+    for name, quota in quotas.items():
+        if quota is None or not quota.ok or not quota.daily:
+            continue
+        month_total = sum(
+            entry.tokens for entry in quota.daily if (entry.day.year, entry.day.month) == (year, month)
+        )
+        rows.append((name, month_total, quota))
+    if rows:
+        for name, month_total, quota in sorted(rows, key=lambda row: -row[1]):
+            text.append(f"  {name:<14} {fmt_tokens(month_total):>7} this month", style=FG)
+            summary = quota.usage_summary
+            if summary is not None:
+                bits = []
+                if summary.peak_daily_tokens is not None:
+                    bits.append(f"peak day {fmt_tokens(summary.peak_daily_tokens)}")
+                if summary.lifetime_tokens is not None:
+                    bits.append(f"lifetime {fmt_tokens(summary.lifetime_tokens)}")
+                if summary.current_streak_days is not None:
+                    bits.append(f"streak {summary.current_streak_days}d")
+                if bits:
+                    text.append("   ·   " + " · ".join(bits), style=MUTED)
+            text.append("\n")
+        text.append(
+            f"  {'all buckets':<14} {fmt_tokens(sum(row[1] for row in rows)):>7} this month\n",
+            style=f"bold {FG}",
+        )
+    elif loading:
+        text.append("  fetching usage history…\n", style=MUTED)
+    else:
+        text.append("  daily token history unavailable\n", style=MUTED)
+    return text
+
+
+class CalendarPane(Static):
+    can_focus = True
+    BINDINGS = [
+        Binding("up,left,pageup", "prev_month", "Previous month", show=False),
+        Binding("down,right,pagedown", "next_month", "Next month", show=False),
+    ]
+    DEFAULT_CSS = """
+    CalendarPane {
+        height: auto;
+        padding: 1 2 0 2;
+    }
+    CalendarPane:focus {
+        background: #181818;
+    }
+    """
+
+    def action_prev_month(self) -> None:
+        app = self.app
+        if isinstance(app, SlopApp):
+            app.action_prev_month()
+
+    def action_next_month(self) -> None:
+        app = self.app
+        if isinstance(app, SlopApp):
+            app.action_next_month()
 
 
 class BucketItem(ListItem):
@@ -446,6 +697,16 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         color: #6c6c6c;
         display: none;
     }
+    #calendar-view {
+        height: 1fr;
+        display: none;
+        background: #141414;
+        scrollbar-color: #bb9af7;
+    }
+    #calendar-detail {
+        height: auto;
+        padding: 1 2;
+    }
     """
     BINDINGS = [
         Binding("enter", "launch", "Launch", show=True),
@@ -454,6 +715,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         Binding("d", "delete", "Delete", show=True),
         Binding("n", "rename", "Rename", show=True),
         Binding("r", "refresh", "Refresh", show=True),
+        Binding("c", "calendar", "Calendar", show=True),
         Binding("l", "reauthorize", "Reauthorize", show=True),
         Binding("f", "toggle_full", "Full access", show=True),
         Binding("q", "quit", "Quit", show=True),
@@ -470,6 +732,10 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.cfg: Config = ensure_config()
         self.quotas: dict[str, Quota] = {}
         self.loading: set[str] = set()
+        self.view: str = "buckets"
+        today = date.today()
+        self._cal: tuple[int, int] = (today.year, today.month)
+        self._quota_gen = 0
         self._reauth_prompted = reauth_prompted if reauth_prompted is not None else set()
         self._reauth_running = False
         self._initial_selection = selected_name
@@ -484,6 +750,9 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                 id="empty",
                 markup=True,
             )
+            with VerticalScroll(id="calendar-view"):
+                yield CalendarPane("", id="calendar-grid")
+                yield Static("", id="calendar-detail")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -493,7 +762,11 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
 
     def _sync_subtitle(self) -> None:
         mode = "full access" if self.cfg.launch.full_access else "sandbox on"
-        self.sub_title = f"buckets · {mode}"
+        if self.view == "calendar":
+            year, month = self._cal
+            self.sub_title = f"calendar · {_calendar.month_name[month]} {year} · {mode}"
+        else:
+            self.sub_title = f"buckets · {mode}"
 
     async def _boot(self) -> None:
         if unmanaged_auth_exists():
@@ -531,6 +804,8 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
             bits.append("empty: " + ", ".join(empty))
         elif ok and len(ok) == n:
             bits.append("all ok")
+        if self.loading:
+            bits.append(f"fetching {len(self.loading)}…")
         mode = "full access" if self.cfg.launch.full_access else "sandbox on"
         bits.append(mode)
         return "   ·   ".join(bits)
@@ -538,10 +813,67 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
     def _update_summary(self) -> None:
         self.query_one("#summary", Static).update(self._summary_text())
 
+    def _sync_view(self, *, has_profiles: bool) -> None:
+        in_calendar = self.view == "calendar"
+        self.query_one("#calendar-view", VerticalScroll).display = in_calendar
+        self.query_one("#buckets", ListView).display = not in_calendar and has_profiles
+        self.query_one("#empty", Static).display = not in_calendar and not has_profiles
+        if in_calendar:
+            self._render_calendar()
+            try:
+                self.query_one("#calendar-grid", CalendarPane).focus()
+            except Exception:
+                pass
+
+    def _render_calendar(self) -> None:
+        now = datetime.now().astimezone()
+        year, month = self._cal
+        events = collect_resets(self.quotas, now=now)
+        self.query_one("#calendar-grid", CalendarPane).update(
+            render_calendar(
+                year,
+                month,
+                today=now.date(),
+                events=events,
+                totals=daily_totals(self.quotas),
+                width=max(77, self.size.width - 4),
+            )
+        )
+        self.query_one("#calendar-detail", Static).update(
+            render_calendar_detail(
+                year,
+                month,
+                quotas=self.quotas,
+                events=events,
+                now=now,
+                loading=bool(self.loading),
+            )
+        )
+
+    def action_calendar(self) -> None:
+        if self._modal_open():
+            return
+        self.view = "buckets" if self.view == "calendar" else "calendar"
+        self._sync_subtitle()
+        self.reload()
+
+    def action_prev_month(self) -> None:
+        if self.view != "calendar" or self._modal_open():
+            return
+        self._cal = shift_month(*self._cal, -1)
+        self._sync_subtitle()
+        self._render_calendar()
+
+    def action_next_month(self) -> None:
+        if self.view != "calendar" or self._modal_open():
+            return
+        self._cal = shift_month(*self._cal, 1)
+        self._sync_subtitle()
+        self._render_calendar()
+
     def reload(self) -> None:
         profiles = list_profiles()
         lv = self.query_one("#buckets", ListView)
-        empty = self.query_one("#empty", Static)
         current = self._initial_selection or current_name()
         keep = lv.index
         existing = {
@@ -551,8 +883,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         }
         names = [p.name for p in profiles]
         if set(existing) == set(names) and names:
-            empty.display = False
-            lv.display = True
+            self._sync_view(has_profiles=True)
             for profile in profiles:
                 existing[profile.name].set_state(
                     active=profile.active,
@@ -562,19 +893,18 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                     plan=profile.identity.plan,
                 )
             self._update_summary()
-            try:
-                lv.focus()
-            except Exception:
-                pass
+            if self.view != "calendar":
+                try:
+                    lv.focus()
+                except Exception:
+                    pass
             return
         lv.clear()
         if not profiles:
-            empty.display = True
-            lv.display = False
+            self._sync_view(has_profiles=False)
             self._update_summary()
             return
-        empty.display = False
-        lv.display = True
+        self._sync_view(has_profiles=True)
         for profile in profiles:
             lv.append(
                 BucketItem(
@@ -596,10 +926,11 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                     break
         self._initial_selection = None
         self._update_summary()
-        try:
-            lv.focus()
-        except Exception:
-            pass
+        if self.view != "calendar":
+            try:
+                lv.focus()
+            except Exception:
+                pass
 
     def _selected_name(self) -> str | None:
         lv = self.query_one("#buckets", ListView)
@@ -614,18 +945,58 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
     def action_refresh(self) -> None:
         names = [p.name for p in list_profiles()]
         self.loading = set(names)
+        self._quota_gen += 1
         self.reload()
-        self.fetch_quotas()
+        self.fetch_quotas(self._quota_gen)
 
     @work(thread=True, group="quota", exclusive=True)
-    def fetch_quotas(self) -> None:
-        results = fetch_all()
-        self.call_from_thread(self._apply_quotas, results)
+    def fetch_quotas(self, generation: int) -> None:
+        # Each bucket is applied the moment its own request finishes,
+        # rather than waiting for the slowest account.
+        for quota in fetch_each():
+            self.call_from_thread(self._apply_quota, quota, generation=generation)
+
+    def _apply_quota(
+        self,
+        quota: Quota,
+        *,
+        generation: int | None = None,
+        prompt: bool = True,
+    ) -> None:
+        if generation is not None and generation != self._quota_gen:
+            return
+        self.quotas[quota.name] = quota
+        self.loading.discard(quota.name)
+        profiles = {profile.name: profile for profile in list_profiles()}
+        lv = self.query_one("#buckets", ListView)
+        item = next(
+            (
+                child
+                for child in lv.children
+                if isinstance(child, BucketItem) and child.bucket_name == quota.name
+            ),
+            None,
+        )
+        profile = profiles.get(quota.name)
+        if item is not None and profile is not None:
+            item.set_state(
+                active=profile.active,
+                quota=quota,
+                loading=False,
+                email=profile.identity.email,
+                plan=profile.identity.plan,
+            )
+            self._update_summary()
+            if self.view == "calendar":
+                self._render_calendar()
+        else:
+            self.reload()
+        if prompt and quota.reauth_required:
+            self.prompt_reauthorization()
 
     def _apply_quotas(self, results: dict[str, Quota]) -> None:
-        self.quotas.update(results)
-        self.loading.clear()
-        self.reload()
+        for quota in results.values():
+            self._apply_quota(quota, prompt=False)
         self.prompt_reauthorization()
 
     @work(group="reauth")
@@ -659,7 +1030,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.exit(("reauth", name, []))
 
     def action_reauthorize(self) -> None:
-        if self._modal_open() or self._reauth_running:
+        if self.view != "buckets" or self._modal_open() or self._reauth_running:
             return
         name = self._selected_name()
         if name:
@@ -667,7 +1038,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
             self._reauthorize(name)
 
     def action_switch(self) -> None:
-        if self._modal_open():
+        if self.view != "buckets" or self._modal_open():
             return
         name = self._selected_name()
         if not name:
@@ -684,7 +1055,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         return len(self.screen_stack) > 1
 
     def action_launch(self) -> None:
-        if self._modal_open():
+        if self.view != "buckets" or self._modal_open():
             return
         name = self._selected_name()
         if not name:
@@ -705,6 +1076,8 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
 
     @work
     async def action_add(self) -> None:
+        if self.view != "buckets":
+            return
         spec = await self.push_screen_wait(AddModal())
         if spec is None:
             return
@@ -712,6 +1085,8 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
 
     @work
     async def action_delete(self) -> None:
+        if self.view != "buckets":
+            return
         name = self._selected_name()
         if not name:
             return
@@ -732,6 +1107,8 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
 
     @work
     async def action_rename(self) -> None:
+        if self.view != "buckets":
+            return
         name = self._selected_name()
         if not name:
             return

@@ -23,7 +23,9 @@ Each account shows usage left and its banked reset count. `slop list --quota` an
 | `a` | add another account (device code) |
 | `d` | delete a saved account |
 | `n` | rename |
-| `r` | refresh usage |
+| `r` | refresh usage (each bucket appears as its request finishes) |
+| `c` | toggle the calendar: today, upcoming resets with times, and tokens used per day |
+| `↑` / `↓` | in the calendar, go to the previous / next month |
 | `l` | reauthorize the selected bucket with a device code |
 | `f` | toggle full-access launch |
 | `slop list --quota` | print buckets and live usage |
