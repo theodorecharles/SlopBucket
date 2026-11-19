@@ -6,11 +6,11 @@ TUI dashboard for multiple OpenAI Codex / ChatGPT accounts.
 curl -fsSL https://raw.githubusercontent.com/theodorecharles/SlopBucket/main/install.sh | bash && slop
 ```
 
-Arrow keys move. Enter launches. `a` adds an account with device-code login (works on headless boxes). `d` deletes. `r` refreshes usage.
+Arrow keys move. Enter launches. `a` adds an account with device-code login (works on headless boxes). `d` deletes. `s` opens all-time token stats.
 
 While the dashboard is open, usage, credits, and banked resets refresh automatically
-every 30 seconds. A slow refresh finishes before another begins; `r` still refreshes
-on demand. Your selection and open dialogs are preserved.
+every 30 seconds. A slow refresh finishes before another begins.
+Your selection and open dialogs are preserved.
 The dashboard opens immediately and loads accounts concurrently, displaying each
 account's result as it arrives without waiting for slower accounts.
 
@@ -25,15 +25,13 @@ Each account shows usage left and its banked reset count. `slop list --quota` an
 | --- | --- |
 | `slop` | open the buckets TUI |
 | Enter | switch to the highlighted account and launch Codex |
-| `s` | switch without launching |
+| `s` | open the all-time token stats page |
 | `a` | add another account (device code) |
 | `d` | delete a saved account |
 | `n` | rename |
-| `r` | refresh usage (each bucket appears as its request finishes) |
 | `c` | toggle the calendar: today, upcoming resets with times, and tokens used per day |
 | `↑` / `↓` | in the calendar, go to the previous / next month |
 | `l` | reauthorize the selected bucket with a device code |
-| `f` | toggle full-access launch |
 | `slop list --quota` | print buckets and live usage |
 | `slop launch ted` | switch to `ted` and exec Codex |
 | `slop add allie` | log in a second account (device code) |
@@ -126,9 +124,21 @@ known invalid login until its credentials change. `--interval SECONDS` changes
 the check interval (minimum 30 seconds). The PM2 process name is
 `slop-token-refresh`; stop it with `pm2 stop slop-token-refresh`.
 
+## Stats
+
+Press `s` for all-time token usage. The headline, daily graph, busiest
+days, and per-bucket breakdown come from the server's per-account usage
+history, so they cover every machine, like the calendar. Below that, a
+this-machine section breaks down the local Codex session logs
+(`~/.codex/sessions`) into input/cached/output/reasoning, sessions,
+model calls, and per-model totals. Deleted sessions are not included in
+the local counts. The first visit scans every saved session once and
+caches the counts under `~/.cache/slop/`; later visits only read new
+activity. Server daily totals can lag a day. Esc returns.
+
 ## Full access launch
 
-By default slop starts Codex with:
+Slop always starts Codex yolo:
 
 ```
 codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust
@@ -145,11 +155,8 @@ bin = "codex"
 extra_args = []
 ```
 
-Turn it off in the TUI with `f`, or:
-
-```bash
-slop config --set launch.full_access false
-```
+There is no toggle: launches are always yolo. The `full_access` and
+`bypass_hook_trust` keys are legacy and no longer change the launch command.
 
 ## How credentials are stored
 

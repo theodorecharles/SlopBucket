@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import calendar as _calendar
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.worker import Worker
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
-from slop.config import Config, ensure as ensure_config, save as save_config
+from slop.config import Config, ensure as ensure_config
 from slop.quota import Quota, Window, banked_resets_label, iter_quotas, until_label
+from slop.stats import Stats, collect_stats
+from slop.stats import fmt_tokens as _fmt_tokens_big
 from slop.theme import BLUE, FG, GREEN, GROK_NIGHT, GUTTER, MAGENTA, MUTED, ORANGE, RED, YELLOW
 from slop.store import (
     StoreError,
@@ -240,8 +242,8 @@ def render_calendar(
         return (" " + content)[:cell_w].ljust(cell_w)
 
     hline("┌", "┬", "┐")
-    append_row([(cell(weekday), f"bold {MUTED}") for weekday in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")])
-    weeks = _calendar.Calendar(firstweekday=0).monthdatescalendar(year, month)
+    append_row([(cell(weekday), f"bold {MUTED}") for weekday in ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")])
+    weeks = _calendar.Calendar(firstweekday=_calendar.SUNDAY).monthdatescalendar(year, month)
     for week in weeks:
         hline("├", "┼", "┤")
         lines: list[list[tuple[str, str]]] = [[] for _ in range(5)]
@@ -280,7 +282,7 @@ def render_calendar(
     text.append("  ", style=MUTED)
     text.append("reset day", style=f"bold #141414 on {GREEN}")
     text.append("  bold green entry = that bucket's next reset", style=MUTED)
-    text.append("\n↑ previous month   ↓ next month   c buckets   r refresh", style=MUTED)
+    text.append("\n↑ previous month   ↓ next month   c buckets", style=MUTED)
     return text
 
 
@@ -487,7 +489,7 @@ class BucketItem(ListItem):
         if self._loading and quota is None:
             meters.mount(Static("fetching usage…", markup=True))
         elif quota is None:
-            meters.mount(Static(f"[{MUTED}]press r to load usage[/]", markup=True))
+            meters.mount(Static(f"[{MUTED}]waiting for usage[/]", markup=True))
         elif not quota.ok:
             meters.mount(Static(f"[{RED}]{quota.error or 'usage unavailable'}[/]", markup=True))
         elif quota.windows:
@@ -643,6 +645,294 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+_PARTIAL_BLOCKS = " ▁▂▃▄▅▆▇█"
+
+
+def _pct(part: int, whole: int) -> str:
+    if whole <= 0:
+        return "0%"
+    return f"{part / whole * 100:.0f}%"
+
+
+def _column_chart(values: list[int], height: int = 8) -> list[str]:
+    """One column per value, scaled to the peak, using eighth blocks."""
+    if not values:
+        return []
+    peak = max(values) or 1
+    eighths = [int(round(value / peak * height * 8)) for value in values]
+    rows: list[str] = []
+    for row in range(height, 0, -1):
+        chars: list[str] = []
+        for filled in eighths:
+            if filled >= row * 8:
+                chars.append("█")
+            elif filled <= (row - 1) * 8:
+                chars.append(" ")
+            else:
+                chars.append(_PARTIAL_BLOCKS[filled - (row - 1) * 8])
+        rows.append("".join(chars).rstrip())
+    return rows
+
+
+def _recent_day_values(stats: Stats, days: int, today: date) -> list[tuple[date, int]]:
+    return [
+        (day, stats.day_total(day.isoformat()))
+        for day in (today - timedelta(days=offset) for offset in range(days - 1, -1, -1))
+    ]
+
+
+def _server_view(quotas: dict[str, Quota] | None):
+    """Aggregate server-reported usage across buckets.
+
+    Returns (total, daily totals, per-bucket lifetime rows) or None when
+    no bucket has reported any usage history yet.
+    """
+    if not quotas:
+        return None
+    lifetimes: list[tuple[str, object]] = []
+    total = 0
+    contributed = False
+    for name, quota in quotas.items():
+        if quota is None or not quota.ok:
+            continue
+        summary = quota.usage_summary
+        daily_sum = sum(entry.tokens for entry in quota.daily)
+        if summary is not None and summary.lifetime_tokens is not None:
+            lifetimes.append((name, summary))
+            total += summary.lifetime_tokens
+            contributed = True
+        elif daily_sum:
+            total += daily_sum
+            contributed = True
+    daily = {day: tokens for day, tokens in daily_totals(quotas).items() if tokens > 0}
+    if not contributed and not daily:
+        return None
+    if not total:
+        total = sum(daily.values())
+    lifetimes.sort(key=lambda item: -(item[1].lifetime_tokens or 0))
+    return total, daily, lifetimes
+
+
+def render_stats(
+    stats: Stats,
+    width: int,
+    today: date | None = None,
+    quotas: dict[str, Quota] | None = None,
+) -> Text:
+    today = today or date.today()
+    width = max(40, width)
+    text = Text()
+    total = stats.total
+    server = _server_view(quotas)
+    if server is None and total["total"] <= 0:
+        text.append("ALL-TIME TOKEN USAGE\n\n", style=f"bold {MAGENTA}")
+        text.append("No token usage available yet. Server history has not loaded and no local sessions were found.", style=MUTED)
+        return text
+
+    def heading(label: str) -> None:
+        text.append(f"{label}\n", style=f"bold {MAGENTA}")
+
+    def row(label: str, value: str, note: str = "") -> None:
+        text.append(f"  {label:<11}", style=MUTED)
+        text.append(f"{value:>10}", style=FG)
+        if note:
+            text.append(f"   {note}", style=MUTED)
+        text.append("\n")
+
+    bar_width = max(10, min(28, width - 46))
+
+    def daily_section(daily: dict[date, int]) -> None:
+        best_day, best_value = max(daily.items(), key=lambda item: item[1])
+
+        def window(days: int) -> int:
+            return sum(daily.get(today - timedelta(days=offset), 0) for offset in range(days))
+
+        row("active days", f"{len(daily):,}", f"since {min(daily).isoformat()}")
+        row("avg / day", _fmt_tokens_big(sum(daily.values()) // max(1, len(daily))), "per active day")
+        today_note = f"last 7d {_fmt_tokens_big(window(7))} · last 30d {_fmt_tokens_big(window(30))}"
+        row("today", _fmt_tokens_big(daily.get(today, 0)), today_note)
+        row("best day", _fmt_tokens_big(best_value), best_day.isoformat())
+        text.append("\n")
+        chart_days = max(14, min(90, width - 4))
+        recent = [(today - timedelta(days=offset)) for offset in range(chart_days - 1, -1, -1)]
+        values = [daily.get(day, 0) for day in recent]
+        peak_day = max(recent, key=lambda day: daily.get(day, 0))
+        heading(f"DAILY TOKENS — LAST {chart_days} DAYS")
+        text.append(f"  peak {_fmt_tokens_big(daily.get(peak_day, 0))} on {peak_day.isoformat()}\n", style=MUTED)
+        for line in _column_chart(values):
+            text.append(f"  {line}\n", style=BLUE)
+        start_label = recent[0].isoformat()
+        end_label = "today"
+        gap = max(1, len(recent) - len(start_label) - len(end_label))
+        text.append(f"  {start_label}{' ' * gap}{end_label}\n\n", style=MUTED)
+        heading("BUSIEST DAYS")
+        for day, value in sorted(daily.items(), key=lambda item: item[1], reverse=True)[:5]:
+            filled, empty = _split_bar(value / best_value * 100 if best_value else 0, bar_width)
+            text.append(f"  {day.isoformat()}  ", style=FG)
+            text.append("█" * filled, style=GREEN)
+            text.append("░" * empty, style=GUTTER)
+            text.append(f"  {_fmt_tokens_big(value)}\n", style=MUTED)
+        text.append("\n")
+
+    if server is not None:
+        server_total, daily, lifetimes = server
+        heading("ALL-TIME TOKEN USAGE")
+        text.append("  all buckets · all machines · server-reported\n\n", style=MUTED)
+        text.append(f"  {_fmt_tokens_big(server_total)} tokens", style=f"bold {FG}")
+        text.append(f"   ({server_total:,})\n\n", style=MUTED)
+        if daily:
+            daily_section(daily)
+        if lifetimes:
+            heading("BY BUCKET")
+            peak_lifetime = lifetimes[0][1].lifetime_tokens or 1
+            lifetime_sum = sum(summary.lifetime_tokens or 0 for _, summary in lifetimes)
+            for name, summary in lifetimes:
+                lifetime = summary.lifetime_tokens or 0
+                filled, empty = _split_bar(lifetime / peak_lifetime * 100 if peak_lifetime else 0, bar_width)
+                text.append(f"  {name:<20}", style=FG)
+                text.append("█" * filled, style=ORANGE)
+                text.append("░" * empty, style=GUTTER)
+                bits = [f"{_fmt_tokens_big(lifetime):>8}", _pct(lifetime, lifetime_sum)]
+                if summary.peak_daily_tokens is not None:
+                    bits.append(f"peak day {_fmt_tokens_big(summary.peak_daily_tokens)}")
+                if summary.current_streak_days is not None:
+                    bits.append(f"streak {summary.current_streak_days}d")
+                if summary.longest_streak_days is not None:
+                    bits.append(f"longest {summary.longest_streak_days}d")
+                text.append("  " + "  ·  ".join(bits) + "\n", style=MUTED)
+            text.append("\n")
+
+    if total["total"] > 0:
+        heading("THIS MACHINE — SESSION LOGS")
+        note = "  Codex session logs on this machine · all buckets combined"
+        if server is not None:
+            note += f" · {_pct(total['total'], server[0])} of all-time"
+        else:
+            note += " · server history unavailable, showing this machine only"
+        text.append(note + "\n\n", style=MUTED)
+        text.append(f"  {_fmt_tokens_big(total['total'])} tokens", style=f"bold {FG}")
+        text.append(f"   ({total['total']:,})\n\n", style=MUTED)
+        row("input", _fmt_tokens_big(total["input"]), f"cached {_fmt_tokens_big(total['cached'])} · {_pct(total['cached'], total['input'])} of input")
+        row("output", _fmt_tokens_big(total["output"]), f"reasoning {_fmt_tokens_big(total['reasoning'])} · {_pct(total['reasoning'], total['output'])} of output")
+        if total["cache_write"]:
+            row("cache write", _fmt_tokens_big(total["cache_write"]))
+        row("sessions", f"{stats.sessions:,}", f"model calls {stats.requests:,}")
+        row("active days", f"{len(stats.days):,}", f"since {stats.first_day}")
+        text.append("\n")
+        if server is None:
+            local_daily = {
+                date.fromisoformat(day): usage["total"] for day, usage in stats.days.items()
+            }
+            daily_section(local_daily)
+        heading("BY MODEL — THIS MACHINE")
+        models = sorted(stats.models.items(), key=lambda item: item[1]["total"], reverse=True)
+        peak_model = models[0][1]["total"] if models else 1
+        for name, usage in models[:8]:
+            filled, empty = _split_bar(usage["total"] / peak_model * 100 if peak_model else 0, bar_width)
+            text.append(f"  {name:<20}", style=FG)
+            text.append("█" * filled, style=BLUE)
+            text.append("░" * empty, style=GUTTER)
+            text.append(f"  {_fmt_tokens_big(usage['total']):>8}  {_pct(usage['total'], total['total'])}\n", style=MUTED)
+        if len(models) > 8:
+            rest = sum(usage["total"] for _, usage in models[8:])
+            text.append(f"  {'+ ' + str(len(models) - 8) + ' more':<20}", style=MUTED)
+            text.append(" " * bar_width)
+            text.append(f"  {_fmt_tokens_big(rest):>8}  {_pct(rest, total['total'])}\n", style=MUTED)
+        text.append("\n  Local counts exclude deleted sessions. Server daily totals can lag a day.", style=MUTED)
+    return text
+
+
+class StatsScreen(Screen):
+    BINDINGS = [
+        Binding("escape", "back", "Back", show=True, priority=True),
+        Binding("q", "back", "Back", show=False, priority=True),
+        Binding("s", "back", "Back", show=False, priority=True),
+    ]
+    DEFAULT_CSS = """
+    StatsScreen {
+        background: #141414;
+        color: #e1e1e1;
+    }
+    #stats-scroll {
+        height: 1fr;
+        scrollbar-color: #bb9af7;
+    }
+    #stats-body {
+        padding: 1 3;
+        width: 1fr;
+    }
+    """
+
+    def __init__(self, quotas: dict[str, Quota] | None = None) -> None:
+        super().__init__()
+        self._quotas = quotas or {}
+        self._stats: Stats | None = None
+        self._quota_fingerprint: tuple | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True, icon="◆")
+        with VerticalScroll(id="stats-scroll"):
+            yield Static("scanning Codex sessions…", id="stats-body")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "slop"
+        self.sub_title = "stats"
+        self._load()
+        # Server history may still be loading when the page opens; pick
+        # it up (and later refreshes) without reopening the page.
+        self.set_interval(5, self._render_body)
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    @work(thread=True, group="stats", exclusive=True)
+    def _load(self) -> None:
+        def progress(done: int, total: int) -> None:
+            self.app.call_from_thread(self._on_progress, done, total)
+
+        stats = collect_stats(progress=progress)
+        self.app.call_from_thread(self._show, stats)
+
+    def _on_progress(self, done: int, total: int) -> None:
+        if self._stats is not None or not self.is_mounted:
+            return
+        self.query_one("#stats-body", Static).update(
+            f"scanning Codex sessions… {done}/{total}\n\nFirst scan reads every saved session once; later visits only read new activity."
+        )
+
+    def _show(self, stats: Stats) -> None:
+        self._stats = stats
+        self._render_body()
+
+    def _live_quotas(self) -> dict[str, Quota]:
+        app = self.app
+        if isinstance(app, SlopApp) and app.quotas:
+            return dict(app.quotas)
+        return self._quotas
+
+    def _render_body(self) -> None:
+        if self._stats is None or not self.is_mounted:
+            return
+        quotas = self._live_quotas()
+        fingerprint = tuple(
+            sorted(
+                (name, quota.fetched_at, len(quota.daily))
+                for name, quota in quotas.items()
+                if quota is not None
+            )
+        ) + (self.size.width,)
+        if fingerprint == self._quota_fingerprint:
+            return
+        self._quota_fingerprint = fingerprint
+        self.query_one("#stats-body", Static).update(
+            render_stats(self._stats, self.size.width - 6, quotas=quotas)
+        )
+
+    def on_resize(self) -> None:
+        self._render_body()
+
+
 class SlopApp(App[tuple[str, str, list[str]] | None]):
     TITLE = "slop"
     SUB_TITLE = "buckets"
@@ -714,14 +1004,12 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
     """
     BINDINGS = [
         Binding("enter", "launch", "Launch", show=True),
-        Binding("s", "switch", "Switch", show=True),
+        Binding("s", "stats", "Stats", show=True),
         Binding("a", "add", "Add", show=True),
         Binding("d", "delete", "Delete", show=True),
         Binding("n", "rename", "Rename", show=True),
-        Binding("r", "refresh", "Refresh", show=True),
         Binding("c", "calendar", "Calendar", show=True),
         Binding("l", "reauthorize", "Reauthorize", show=True),
-        Binding("f", "toggle_full", "Full access", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("ctrl+c", "quit", "Quit", show=False, priority=True),
     ]
@@ -765,7 +1053,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.run_worker(self._boot(), exclusive=True)
 
     def _sync_subtitle(self) -> None:
-        mode = "full access" if self.cfg.launch.full_access else "sandbox on"
+        mode = "yolo"
         if self.view == "calendar":
             year, month = self._cal
             self.sub_title = f"calendar · {_calendar.month_name[month]} {year} · {mode}"
@@ -811,8 +1099,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
             bits.append("all ok")
         if self.loading:
             bits.append(f"fetching {len(self.loading)}…")
-        mode = "full access" if self.cfg.launch.full_access else "sandbox on"
-        bits.append(mode)
+        bits.append("yolo")
         return "   ·   ".join(bits)
 
     def _update_summary(self) -> None:
@@ -1011,19 +1298,10 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
             self._reauth_prompted.add(name)
             self._reauthorize(name)
 
-    def action_switch(self) -> None:
-        if self.view != "buckets" or self._modal_open():
+    def action_stats(self) -> None:
+        if self._modal_open():
             return
-        name = self._selected_name()
-        if not name:
-            return
-        try:
-            switch_to(name)
-        except StoreError as exc:
-            self.notify(str(exc), severity="error")
-            return
-        self.notify(f"switched to {name} · restart Codex if it's already running")
-        self.reload()
+        self.push_screen(StatsScreen(dict(self.quotas)))
 
     def _modal_open(self) -> bool:
         return len(self.screen_stack) > 1
@@ -1040,13 +1318,6 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
             self.notify(str(exc), severity="error")
             return
         self.exit(("launch", name, []))
-
-    def action_toggle_full(self) -> None:
-        self.cfg.launch.full_access = not self.cfg.launch.full_access
-        save_config(self.cfg)
-        self._sync_subtitle()
-        state = "on" if self.cfg.launch.full_access else "off"
-        self.notify(f"full access {state}")
 
     @work
     async def action_add(self) -> None:

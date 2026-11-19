@@ -5,6 +5,63 @@ from slop.tui import _split_bar, _status_markup
 from slop.quota import Quota, Window
 
 
+def test_s_opens_stats_and_removed_keys_are_unbound(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from slop import tui
+    from datetime import date
+
+    from slop.quota import DailyTokens, Quota, UsageSummary
+    from slop.stats import Stats
+    from test_store import _auth
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setenv("SLOP_CONFIG", str(tmp_path / "slop.toml"))
+    (tmp_path / "auth.d").mkdir()
+    (tmp_path / "auth.d" / "ted.json").write_text(json.dumps(_auth("ted@example.com")))
+    bucket_quota = Quota(
+        name="ted",
+        ok=True,
+        daily=[DailyTokens(day=date(2026, 11, 1), tokens=2_000_000), DailyTokens(day=date(2026, 11, 2), tokens=3_000_000)],
+        usage_summary=UsageSummary(lifetime_tokens=5_000_000, peak_daily_tokens=3_000_000, current_streak_days=4, longest_streak_days=9),
+    )
+    monkeypatch.setattr(tui, "iter_quotas", lambda: iter({"ted": bucket_quota}.items()))
+    fake = Stats(
+        total={"input": 900, "cached": 800, "cache_write": 0, "output": 100, "reasoning": 25, "total": 1000},
+        days={"2026-11-01": {"input": 900, "cached": 800, "cache_write": 0, "output": 100, "reasoning": 25, "total": 1000}},
+        models={"gpt-m1": {"input": 900, "cached": 800, "cache_write": 0, "output": 100, "reasoning": 25, "total": 1000}},
+        requests=3,
+        sessions=1,
+        files=1,
+    )
+    monkeypatch.setattr(tui, "collect_stats", lambda progress=None: fake)
+    bound = {binding.key: binding.action for binding in tui.SlopApp.BINDINGS}
+    assert bound["s"] == "stats"
+    assert "r" not in bound
+    assert "f" not in bound
+
+    async def scenario():
+        app = tui.SlopApp()
+        async with app.run_test() as pilot:
+            await wait_until(lambda: "ted" in app.quotas)
+            await pilot.press("s")
+            assert isinstance(app.screen, tui.StatsScreen)
+            await pilot.pause()
+            body = str(app.screen.query_one("#stats-body", tui.Static).render())
+            assert "ALL-TIME TOKEN USAGE" in body
+            assert "all machines" in body
+            assert "5.0M tokens" in body
+            assert "BY BUCKET" in body
+            assert "THIS MACHINE — SESSION LOGS" in body
+            assert "1,000" in body
+            assert "gpt-m1" in body
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, tui.StatsScreen)
+
+    asyncio.run(scenario())
+
+
 def test_empty_bar_is_all_track():
     filled, empty = _split_bar(0, 20)
     assert filled == 0
@@ -381,6 +438,16 @@ def test_calendar_highlights_today_resets_and_daily_tokens():
     )
     plain = rendered.plain
     assert "November 2026" in plain
+    header = next(line for line in plain.splitlines() if "Sun" in line)
+    assert [name for name in header.replace("│", " ").split()] == [
+        "Sun",
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri",
+        "Sat",
+    ]
     assert "┌" in plain and "┬" in plain and "│" in plain and "┼" in plain and "└" in plain
     assert all(
         line.startswith("│") and line.endswith("│") and line.count("│") == 8

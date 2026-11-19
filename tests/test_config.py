@@ -11,12 +11,13 @@ def test_launch_command_full_access(tmp_path, monkeypatch):
     assert "--dangerously-bypass-hook-trust" in cmd
 
 
-def test_launch_command_sandbox(tmp_path, monkeypatch):
+def test_launch_command_always_yolo(tmp_path, monkeypatch):
     monkeypatch.setenv("SLOP_CONFIG", str(tmp_path / "config.toml"))
     cfg = Config(launch=LaunchConfig(full_access=False, bypass_hook_trust=False, extra_args=["--search"]))
     save(cfg)
     cmd = launch_command(load(), extra=["--", "-m", "gpt-5.4"])
-    assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+    assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+    assert "--dangerously-bypass-hook-trust" in cmd
     assert cmd[-3:] == ["--search", "-m", "gpt-5.4"]
 
 

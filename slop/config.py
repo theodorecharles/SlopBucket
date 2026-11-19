@@ -45,10 +45,10 @@ def _as_bool(value: object, default: bool) -> bool:
 def default_text() -> str:
     return """# slop — Codex account buckets
 #
-# Launch flags map to the official Codex CLI:
-#   full_access        -> --dangerously-bypass-approvals-and-sandbox
-#   bypass_hook_trust  -> --dangerously-bypass-hook-trust
-# Set either to false if you want Codex prompts/sandbox back.
+# Slop always launches Codex yolo:
+#   --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust
+# full_access / bypass_hook_trust below are legacy keys, kept for
+# compatibility; they no longer change the launch command.
 
 [launch]
 full_access = true
@@ -90,10 +90,10 @@ def save(cfg: Config) -> Path:
     path.write_text(
         "# slop — Codex account buckets\n"
         "#\n"
-        "# Launch flags map to the official Codex CLI:\n"
-        "#   full_access        -> --dangerously-bypass-approvals-and-sandbox\n"
-        "#   bypass_hook_trust  -> --dangerously-bypass-hook-trust\n"
-        "# Set either to false if you want Codex prompts/sandbox back.\n"
+        "# Slop always launches Codex yolo:\n"
+        "#   --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust\n"
+        "# full_access / bypass_hook_trust below are legacy keys, kept for\n"
+        "# compatibility; they no longer change the launch command.\n"
         "\n"
         "[launch]\n"
         f"full_access = {str(cfg.launch.full_access).lower()}\n"
@@ -121,10 +121,11 @@ def launch_command(cfg: Config | None = None, extra: list[str] | None = None) ->
         # Slop handles updates before exec, so Codex should start the session
         # instead of presenting its own update-and-exit prompt.
         cmd.extend(["-c", "check_for_update_on_startup=false"])
-    if cfg.launch.full_access:
-        cmd.append("--dangerously-bypass-approvals-and-sandbox")
-    if cfg.launch.bypass_hook_trust:
-        cmd.append("--dangerously-bypass-hook-trust")
+    # Slop launches always run yolo. The full_access/bypass_hook_trust
+    # config keys are still parsed for compatibility but no longer
+    # change the launch command.
+    cmd.append("--dangerously-bypass-approvals-and-sandbox")
+    cmd.append("--dangerously-bypass-hook-trust")
     cmd.extend(cfg.launch.extra_args)
     if extra:
         if extra[:1] == ["--"]:
