@@ -33,7 +33,15 @@ def test_existing_configs_enable_managed_updates_by_default(tmp_path, monkeypatc
     path.write_text('[launch]\nbin = "codex"\n')
     cfg = load()
     assert cfg.launch.auto_update
+    assert cfg.launch.auto_update_slop
     assert launch_command(cfg)[1:3] == ["-c", "check_for_update_on_startup=false"]
+
+
+def test_auto_update_slop_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOP_CONFIG", str(tmp_path / "config.toml"))
+    save(Config(launch=LaunchConfig(auto_update_slop=False)))
+    assert not load().launch.auto_update_slop
+    assert load().launch.auto_update
 
 
 def test_disabling_auto_update_restores_codex_startup_check(tmp_path, monkeypatch):

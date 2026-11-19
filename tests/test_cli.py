@@ -217,3 +217,12 @@ def test_auto_update_config_can_be_disabled_and_enabled(monkeypatch):
     assert not load().launch.auto_update
     cli.cmd_config(SimpleNamespace(set=("launch.auto_update", "true")))
     assert load().launch.auto_update
+
+
+def test_auto_update_slop_config_can_be_disabled_and_enabled(monkeypatch):
+    from slop.config import load
+
+    cli.cmd_config(SimpleNamespace(set=("launch.auto_update_slop", "false")))
+    assert not load().launch.auto_update_slop
+    cli.cmd_config(SimpleNamespace(set=("auto_update_slop", "true")))
+    assert load().launch.auto_update_slop

@@ -61,6 +61,15 @@ Slop disables Codex's separate startup update prompt for these launches only.
 
 To manage Codex updates yourself, run `slop config --set launch.auto_update false`.
 
+SlopBucket updates itself the same way. It checks GitHub for a newer SlopBucket
+release in the background (at most every six hours) and installs it with
+`uv tool install` when you launch an account. The update takes effect next time
+you run `slop`. Failures are reported and never block a launch, development
+checkouts are left alone, and `slop config --set launch.auto_update_slop false`
+turns it off. To update a box by hand — including the one-time update that adds
+self-updating — rerun the install one-liner at the top of this README
+(add `--pm2` on boxes running the PM2 service, as below).
+
 ## Keep accounts renewed with PM2
 
 Install or update SlopBucket **and** its PM2 service on Debian/Linux or macOS:
