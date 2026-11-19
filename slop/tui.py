@@ -10,10 +10,11 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.worker import Worker
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
 from slop.config import Config, ensure as ensure_config, save as save_config
-from slop.quota import Quota, Window, banked_resets_label, fetch_each, until_label
+from slop.quota import Quota, Window, banked_resets_label, iter_quotas, until_label
 from slop.theme import BLUE, FG, GREEN, GROK_NIGHT, GUTTER, MAGENTA, MUTED, ORANGE, RED, YELLOW
 from slop.store import (
     StoreError,
@@ -29,6 +30,9 @@ from slop.store import (
     switch_to,
     unmanaged_auth_exists,
 )
+
+QUOTA_REFRESH_INTERVAL = 30
+
 
 def _bar_style(remaining: float) -> str:
     if remaining < 20:
@@ -735,7 +739,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.view: str = "buckets"
         today = date.today()
         self._cal: tuple[int, int] = (today.year, today.month)
-        self._quota_gen = 0
+        self._quota_worker: Worker[None] | None = None
         self._reauth_prompted = reauth_prompted if reauth_prompted is not None else set()
         self._reauth_running = False
         self._initial_selection = selected_name
@@ -784,6 +788,7 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                     self.notify(str(exc), severity="error")
         self.reload()
         self.action_refresh()
+        self.set_interval(QUOTA_REFRESH_INTERVAL, self.action_refresh)
 
     def _summary_text(self) -> str:
         profiles = list_profiles()
@@ -821,7 +826,8 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         if in_calendar:
             self._render_calendar()
             try:
-                self.query_one("#calendar-grid", CalendarPane).focus()
+                if not self._modal_open():
+                    self.query_one("#calendar-grid", CalendarPane).focus()
             except Exception:
                 pass
 
@@ -893,11 +899,11 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                     plan=profile.identity.plan,
                 )
             self._update_summary()
-            if self.view != "calendar":
-                try:
+            try:
+                if self.view != "calendar" and not self._modal_open():
                     lv.focus()
-                except Exception:
-                    pass
+            except Exception:
+                pass
             return
         lv.clear()
         if not profiles:
@@ -926,11 +932,11 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
                     break
         self._initial_selection = None
         self._update_summary()
-        if self.view != "calendar":
-            try:
+        try:
+            if self.view != "calendar" and not self._modal_open():
                 lv.focus()
-            except Exception:
-                pass
+        except Exception:
+            pass
 
     def _selected_name(self) -> str | None:
         lv = self.query_one("#buckets", ListView)
@@ -943,60 +949,28 @@ class SlopApp(App[tuple[str, str, list[str]] | None]):
         self.action_launch()
 
     def action_refresh(self) -> None:
+        # Cancelling a Textual thread worker does not stop its network requests.
+        # Let a slow refresh finish before accepting another timer tick or `r`.
+        if self._quota_worker is not None and not self._quota_worker.is_finished:
+            return
         names = [p.name for p in list_profiles()]
         self.loading = set(names)
-        self._quota_gen += 1
         self.reload()
-        self.fetch_quotas(self._quota_gen)
+        if names:
+            self._quota_worker = self.fetch_quotas()
 
     @work(thread=True, group="quota", exclusive=True)
-    def fetch_quotas(self, generation: int) -> None:
-        # Each bucket is applied the moment its own request finishes,
-        # rather than waiting for the slowest account.
-        for quota in fetch_each():
-            self.call_from_thread(self._apply_quota, quota, generation=generation)
+    def fetch_quotas(self) -> None:
+        for name, quota in iter_quotas():
+            self.call_from_thread(self._apply_quotas, {name: quota})
+        self.call_from_thread(self._apply_quotas, {}, finished=True)
 
-    def _apply_quota(
-        self,
-        quota: Quota,
-        *,
-        generation: int | None = None,
-        prompt: bool = True,
-    ) -> None:
-        if generation is not None and generation != self._quota_gen:
-            return
-        self.quotas[quota.name] = quota
-        self.loading.discard(quota.name)
-        profiles = {profile.name: profile for profile in list_profiles()}
-        lv = self.query_one("#buckets", ListView)
-        item = next(
-            (
-                child
-                for child in lv.children
-                if isinstance(child, BucketItem) and child.bucket_name == quota.name
-            ),
-            None,
-        )
-        profile = profiles.get(quota.name)
-        if item is not None and profile is not None:
-            item.set_state(
-                active=profile.active,
-                quota=quota,
-                loading=False,
-                email=profile.identity.email,
-                plan=profile.identity.plan,
-            )
-            self._update_summary()
-            if self.view == "calendar":
-                self._render_calendar()
-        else:
-            self.reload()
-        if prompt and quota.reauth_required:
-            self.prompt_reauthorization()
-
-    def _apply_quotas(self, results: dict[str, Quota]) -> None:
-        for quota in results.values():
-            self._apply_quota(quota, prompt=False)
+    def _apply_quotas(self, results: dict[str, Quota], *, finished: bool = False) -> None:
+        self.quotas.update(results)
+        self.loading.difference_update(results)
+        if finished:
+            self.loading.clear()
+        self.reload()
         self.prompt_reauthorization()
 
     @work(group="reauth")

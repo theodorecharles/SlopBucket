@@ -135,7 +135,7 @@ def test_parse_account_usage_buckets_and_summary():
     assert parse_account_usage({"dailyUsageBuckets": None, "summary": {}})[0] == []
 
 
-def test_fetch_each_yields_as_each_account_finishes(monkeypatch):
+def test_iter_quotas_yields_as_each_account_finishes(monkeypatch):
     import time as time_mod
     from pathlib import Path
 
@@ -152,7 +152,7 @@ def test_fetch_each_yields_as_each_account_finishes(monkeypatch):
         Profile(name="slow", path=Path("slow.json"), identity=Identity(), active=False),
         Profile(name="fast", path=Path("fast.json"), identity=Identity(), active=False),
     ]
-    seen = [q.name for q in quota_mod.fetch_each(profiles)]
+    seen = [name for name, _quota in quota_mod.iter_quotas(profiles)]
     assert seen == ["fast", "slow"]
     assert set(quota_mod.fetch_all(profiles)) == {"slow", "fast"}
 

@@ -300,8 +300,8 @@ def fetch_quota(name: str) -> Quota:
                      fetched_at=time.time())
 
 
-def fetch_each(profiles: list[Profile] | None = None) -> Iterator[Quota]:
-    """Yield each account's quota as soon as its request finishes."""
+def iter_quotas(profiles: list[Profile] | None = None) -> Iterator[tuple[str, Quota]]:
+    """Yield each account's usage as soon as its concurrent request completes."""
     profiles = profiles if profiles is not None else list_profiles()
     if not profiles:
         return
@@ -311,10 +311,11 @@ def fetch_each(profiles: list[Profile] | None = None) -> Iterator[Quota]:
         for fut in as_completed(futs):
             name = futs[fut]
             try:
-                yield fut.result()
+                quota = fut.result()
             except Exception as exc:
-                yield Quota(name=name, ok=False, error=str(exc), fetched_at=time.time())
+                quota = Quota(name=name, ok=False, error=str(exc), fetched_at=time.time())
+            yield name, quota
 
 
 def fetch_all(profiles: list[Profile] | None = None) -> dict[str, Quota]:
-    return {quota.name: quota for quota in fetch_each(profiles)}
+    return dict(iter_quotas(profiles))

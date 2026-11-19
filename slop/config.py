@@ -21,6 +21,7 @@ class LaunchConfig:
 
     full_access: bool = True
     bypass_hook_trust: bool = True
+    auto_update: bool = True
     bin: str = "codex"
     extra_args: list[str] = field(default_factory=list)
 
@@ -51,6 +52,7 @@ def default_text() -> str:
 [launch]
 full_access = true
 bypass_hook_trust = true
+auto_update = true
 bin = "codex"
 extra_args = []
 """
@@ -69,6 +71,7 @@ def load() -> Config:
     launch = LaunchConfig(
         full_access=_as_bool(raw.get("full_access"), True),
         bypass_hook_trust=_as_bool(raw.get("bypass_hook_trust"), True),
+        auto_update=_as_bool(raw.get("auto_update"), True),
         bin=str(raw.get("bin") or "codex"),
         extra_args=[str(a) for a in (raw.get("extra_args") or [])],
     )
@@ -92,6 +95,7 @@ def save(cfg: Config) -> Path:
         "[launch]\n"
         f"full_access = {str(cfg.launch.full_access).lower()}\n"
         f"bypass_hook_trust = {str(cfg.launch.bypass_hook_trust).lower()}\n"
+        f"auto_update = {str(cfg.launch.auto_update).lower()}\n"
         f"bin = {cfg.launch.bin!r}\n"
         f"extra_args = [{extra}]\n"
     )
@@ -109,6 +113,10 @@ def ensure() -> Config:
 def launch_command(cfg: Config | None = None, extra: list[str] | None = None) -> list[str]:
     cfg = cfg or load()
     cmd = [cfg.launch.bin]
+    if cfg.launch.auto_update:
+        # Slop handles updates before exec, so Codex should start the session
+        # instead of presenting its own update-and-exit prompt.
+        cmd.extend(["-c", "check_for_update_on_startup=false"])
     if cfg.launch.full_access:
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
     if cfg.launch.bypass_hook_trust:

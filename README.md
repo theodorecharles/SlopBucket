@@ -8,6 +8,12 @@ curl -fsSL https://raw.githubusercontent.com/theodorecharles/SlopBucket/main/ins
 
 Arrow keys move. Enter launches. `a` adds an account with device-code login (works on headless boxes). `d` deletes. `r` refreshes usage.
 
+While the dashboard is open, usage, credits, and banked resets refresh automatically
+every 30 seconds. A slow refresh finishes before another begins; `r` still refreshes
+on demand. Your selection and open dialogs are preserved.
+The dashboard opens immediately and loads accounts concurrently, displaying each
+account's result as it arrives without waiting for slower accounts.
+
 Each account shows usage left and its banked reset count. `slop list --quota` and
 `slop quota` also show banked resets; `slop list --quota --json` includes
 `quota.banked_resets`. If Codex does not return a count, it displays as
@@ -39,6 +45,21 @@ Each account shows usage left and its banked reset count. `slop list --quota` an
 Running Codex sessions keep their in-memory login. `/exit` and launch again after a switch.
 
 Do **not** run `codex logout` to change accounts. Logout can revoke a saved refresh token.
+
+## Automatic Codex updates
+
+Slop checks for a newer stable Codex release in the background while the dashboard
+is open. When you launch an account, it installs an available update with
+`codex update`, then starts Codex with that same account and your launch arguments.
+`slop launch NAME` does the same check before launching. You do not need to rerun Slop.
+
+The updater supports npm, Homebrew, and standalone Codex installations and preserves
+their installation method. Already current, newer, and prerelease builds are left
+alone. Checks have time limits, and simultaneous launches share an update lock.
+If a check or update fails, Slop reports it and continues with the installed version.
+Slop disables Codex's separate startup update prompt for these launches only.
+
+To manage Codex updates yourself, run `slop config --set launch.auto_update false`.
 
 ## Keep accounts renewed with PM2
 
@@ -110,6 +131,7 @@ Config lives at `~/.config/slop/config.toml`:
 [launch]
 full_access = true
 bypass_hook_trust = true
+auto_update = true
 bin = "codex"
 extra_args = []
 ```

@@ -25,3 +25,20 @@ def test_env_override(tmp_path, monkeypatch):
     save(Config())
     monkeypatch.setenv("SLOP_FULL_ACCESS", "0")
     assert load().launch.full_access is False
+
+
+def test_existing_configs_enable_managed_updates_by_default(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    monkeypatch.setenv("SLOP_CONFIG", str(path))
+    path.write_text('[launch]\nbin = "codex"\n')
+    cfg = load()
+    assert cfg.launch.auto_update
+    assert launch_command(cfg)[1:3] == ["-c", "check_for_update_on_startup=false"]
+
+
+def test_disabling_auto_update_restores_codex_startup_check(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOP_CONFIG", str(tmp_path / "config.toml"))
+    cfg = Config(launch=LaunchConfig(auto_update=False))
+    save(cfg)
+    assert not load().launch.auto_update
+    assert "check_for_update_on_startup=false" not in launch_command(load())
